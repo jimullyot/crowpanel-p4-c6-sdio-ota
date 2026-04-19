@@ -13,14 +13,12 @@ This directory should contain ESP32 slave firmware `.bin` files for LittleFS-bas
 
 ## Download
 
-For the CrowPanel 7" ESP32-P4 C6 upgrade, download esp\_hosted v2.9.7:
+For the CrowPanel 7" ESP32-P4 C6 upgrade, download esp\_hosted v2.11.6:
 
 ```bash
 curl -L -o network_adapter.bin \
-    https://esphome.github.io/esp-hosted-firmware/v2.9.7/network_adapter_esp32c6.bin
+    https://espressif.github.io/arduino-esp32/hosted/esp32c6-v2.11.6.bin
 ```
-
-Expected SHA256: `c9286c980b98b362c5b8862bf1d31bf6523e590cc68d70185b206d63f6c8bd11`
 
 See the project [README](../../README.md) for alternative options (build from source).
 

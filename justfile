@@ -51,7 +51,7 @@ check-fw:
 verify-fw: esptool-check check-fw
     @FW=$(find {{fw_dir}} -name "*.bin" 2>/dev/null | head -1); \
     echo "--- Binary: $FW ---"; \
-    esptool.py image_info --version 2 "$FW"
+    esptool image-info "$FW" 2>/dev/null || esptool.py image_info "$FW"
 
 # Copy ota_littlefs component from downloaded esp_hosted (run after set-target)
 fix-components: idf-check

@@ -1,6 +1,6 @@
 # CrowPanel 7" ESP32-P4: Upgrade C6 Co-processor Firmware via SDIO
 
-Standalone ESP-IDF application that upgrades the ESP32-C6 co-processor on [Elecrow CrowPanel 7" ESP32-P4](https://www.elecrow.com/crowpanel-advanced-7-0-inch-esp32-p4-display.html) boards from factory firmware (esp\_hosted v2.3.0) to v2.9.7 — over the existing SDIO bus, without soldering.
+Standalone ESP-IDF application that upgrades the ESP32-C6 co-processor on [Elecrow CrowPanel 7" ESP32-P4](https://www.elecrow.com/crowpanel-advanced-7-0-inch-esp32-p4-display.html) boards from factory firmware (esp\_hosted v2.3.0) to v2.11.6 — over the existing SDIO bus, without soldering.
 
 ## The Problem
 
@@ -27,7 +27,7 @@ USB updates reach the host (ESP32-P4) easily. The C6 has no exposed UART or USB 
 2. App initializes SDIO transport — **no WiFi** (avoids bus contention with v2.3.0)
 3. Reads C6 firmware binary from LittleFS partition on P4 flash
 4. Transfers binary to C6 via esp\_hosted OTA RPC in 1.5 KB chunks
-5. Activates new firmware on C6; C6 reboots into v2.9.7
+5. Activates new firmware on C6; C6 reboots into v2.11.6
 6. Flash your normal firmware back to the P4
 
 The C6 upgrade persists across P4 reflashes — the C6 has its own flash.
@@ -38,11 +38,11 @@ The C6 upgrade persists across P4 reflashes — the C6 has its own flash.
 |-----------|---------|
 | Board | CrowPanel Advanced 7" ESP32-P4 HMI (1024x600), PCB V1.0 |
 | Factory C6 firmware | esp\_hosted v2.3.0 (internal Espressif staging build) |
-| Target C6 firmware | esp\_hosted v2.9.7 |
+| Target C6 firmware | esp\_hosted v2.11.6 |
 | ESP-IDF | v5.5.1 |
-| esp\_hosted component | v2.9.7 ([ESP Component Registry](https://components.espressif.com/components/espressif/esp_hosted/versions/2.9.7)) |
+| esp\_hosted component | v2.11.6 ([ESP Component Registry](https://components.espressif.com/components/espressif/esp_hosted/versions/2.11.6)) |
 
-**Result:** Succeeded on first attempt, 2026-02-16. Zero solder. C6 upgraded from v2.3.0 to v2.9.7 in about 15 seconds.
+**Result:** Succeeded on first attempt, 2026-02-16. Zero solder. C6 upgraded from v2.3.0 to v2.11.6 in about 15 seconds.
 
 ## Prerequisites
 
@@ -66,7 +66,7 @@ The C6 upgrade persists across P4 reflashes — the C6 has its own flash.
 
 ### Firmware
 
-- **C6 firmware binary** — `network_adapter.bin` for ESP32-C6, esp\_hosted v2.9.7 (see below)
+- **C6 firmware binary** — `network_adapter.bin` for ESP32-C6, esp\_hosted v2.11.6 (see below)
 
 ### Obtaining the C6 Firmware Binary
 
@@ -74,10 +74,10 @@ The C6 upgrade persists across P4 reflashes — the C6 has its own flash.
 
 ```bash
 curl -L -o components/ota_littlefs/slave_fw_bin/network_adapter.bin \
-    https://esphome.github.io/esp-hosted-firmware/v2.9.7/network_adapter_esp32c6.bin
+    https://espressif.github.io/arduino-esp32/hosted/esp32c6-v2.11.6.bin
 ```
 
-Expected SHA256: `c9286c980b98b362c5b8862bf1d31bf6523e590cc68d70185b206d63f6c8bd11`
+Expected SHA256: `e32fba3864ab4db82c287a922db83b7093d7d8592730d7a620887b7cfdf401e0`
 
 Verify after download:
 
@@ -98,13 +98,13 @@ cp build/network_adapter.bin /path/to/c6-firmware-upgrade/components/ota_littlef
 **Verify the binary (either option):**
 
 ```bash
-esptool.py image_info --version 2 components/ota_littlefs/slave_fw_bin/network_adapter.bin
+esptool image-info components/ota_littlefs/slave_fw_bin/network_adapter.bin
 ```
 
 Check:
 - `Chip ID: 13 (ESP32-C6)` — correct target
 - `Flash mode: DIO` — **avoid QIO** (QIO causes OTA failures on the C6)
-- `App version:` — should show `2.9.7` (or whichever version you built)
+- `App version:` — should show `2.11.6` (or whichever version you built)
 
 ## Quick Start
 
@@ -119,7 +119,7 @@ just status                # verify serial port, IDF, firmware binary
 ```bash
 # If you haven't downloaded it yet:
 curl -L -o components/ota_littlefs/slave_fw_bin/network_adapter.bin \
-    https://esphome.github.io/esp-hosted-firmware/v2.9.7/network_adapter_esp32c6.bin
+    https://espressif.github.io/arduino-esp32/hosted/esp32c6-v2.11.6.bin
 
 just check-fw              # confirm binary found
 just verify-fw             # inspect chip ID, flash mode, version
@@ -130,7 +130,7 @@ The build system automatically picks up any `.bin` file in this directory and pa
 ### 2. Build
 
 ```bash
-just set-target            # downloads managed components (esp_hosted v2.9.7, littlefs)
+just set-target            # downloads managed components (esp_hosted v2.11.6, littlefs)
 just build                 # checks firmware binary, then builds
 ```
 
@@ -172,15 +172,15 @@ I c6-sdio-ota: [PASS] Connected to C6 slave in 1884ms
 I c6-sdio-ota: [DIAG] C6 firmware: 2.3.0
 I c6-sdio-ota: [PASS] OTA transfer completed in 14832ms
 I c6-sdio-ota: [PASS] Activate succeeded
-I c6-sdio-ota: [DIAG] C6 version after OTA: 2.9.7
-I c6-sdio-ota: [PASS] *** C6 UPGRADED TO v2.9.7 — SUCCESS ***
+I c6-sdio-ota: [DIAG] C6 version after OTA: 2.11.6
+I c6-sdio-ota: [PASS] *** C6 UPGRADED TO v2.11.6 — SUCCESS ***
 ```
 
-If you see `[PASS] C6 already at v2.9.7 — OTA not needed`, the C6 was already upgraded. Nothing more to do.
+If you see `[PASS] C6 already at v2.11.6 — OTA not needed`, the C6 was already upgraded. Nothing more to do.
 
 ### 6. Restore your normal firmware
 
-Flash your regular firmware back to the P4. The C6 retains v2.9.7 independently.
+Flash your regular firmware back to the P4. The C6 retains v2.11.6 independently.
 
 If you use **ESPHome**: reflash your ESPHome firmware via USB. No configuration changes needed — ESPHome detects the new C6 version automatically during boot.
 
@@ -194,10 +194,10 @@ After your normal firmware boots, check the serial output for the esp\_hosted ve
 
 ```
 I esp_hosted: Slave chip_id [13] ESP32-C6
-I esp_hosted: Slave FW version [2.9.7]
+I esp_hosted: Slave FW version [2.11.6]
 ```
 
-**WiFi stability test:** Connect to your network and confirm WiFi remains connected beyond four minutes. The v2.3.0 failure mode was a hard disconnect at ~4 minutes with no recovery. With v2.9.7, WiFi should remain connected indefinitely.
+**WiFi stability test:** Connect to your network and confirm WiFi remains connected beyond four minutes. The v2.3.0 failure mode was a hard disconnect at ~4 minutes with no recovery. With v2.11.6, WiFi should remain connected indefinitely.
 
 ## Build Troubleshooting
 
@@ -303,7 +303,7 @@ idf.py build
 
 **C6 (co-processor):** OTA writes to the **inactive** partition slot only. A failed or interrupted transfer leaves the active slot (current firmware) intact. The only bricking scenario is a binary that passes validation but crashes at runtime — and even then, [UART flash](#alternative-flash-paths) recovers it.
 
-Running this tool a second time is safe. If the C6 already runs v2.9.7, the app detects it and halts without writing anything.
+Running this tool a second time is safe. If the C6 already runs v2.11.6, the app detects it and halts without writing anything.
 
 ## Hardware Reference
 
@@ -346,7 +346,7 @@ The build system automatically generates the LittleFS image from `components/ota
 ├── HARDWARE.md                         C6 pin map, test pads, SDIO bus details
 ├── main/
 │   ├── main.c                          5-phase OTA workflow
-│   ├── idf_component.yml               esp_hosted ==2.9.7, littlefs
+│   ├── idf_component.yml               esp_hosted ==2.11.6, littlefs
 │   └── Kconfig.projbuild               OTA method selection menu
 └── components/
     ├── ota_littlefs/
@@ -383,7 +383,7 @@ CH341 drivers are built into most Linux kernels. The device appears as `/dev/tty
 ## Known Limitations
 
 - **Tested on PCB V1.0 only.** Other CrowPanel revisions may have different GPIO assignments or C6 module variants.
-- **Target firmware: v2.9.7 only.** Other esp\_hosted versions are untested. The download URL and SHA256 above are specific to v2.9.7.
+- **Target firmware: v2.11.6 only.** Other esp\_hosted versions are untested. The download URL above is specific to v2.11.6.
 - **4-bit SDIO mode untested.** The wiring supports it, but OTA reliability in 4-bit mode is unverified.
 - **Version query may fail with v2.3.0.** The factory C6 firmware often times out on RPC version queries. The OTA proceeds anyway (version checks are disabled by default).
 - **LittleFS partition is overwritten** when you flash new firmware to the P4. The C6 binary must be re-embedded each time you rebuild this app.
@@ -399,10 +399,10 @@ No. The P4 can always be reflashed via USB. The C6 OTA writes to the inactive pa
 No. The SDIO OTA path requires zero soldering. Soldering is only needed for the [UART fallback](#alternative-flash-paths) if SDIO OTA fails entirely.
 
 **Can I run this tool twice?**
-Yes. If the C6 already runs v2.9.7, the app detects it and halts without writing. Running it again is safe.
+Yes. If the C6 already runs v2.11.6, the app detects it and halts without writing. Running it again is safe.
 
-**Can I upgrade to a different version (not v2.9.7)?**
-In principle, yes — place any esp\_hosted `network_adapter.bin` for ESP32-C6 in `slave_fw_bin/`. Verify it with `esptool.py image_info` first. Only v2.9.7 has been tested.
+**Can I upgrade to a different version (not v2.11.6)?**
+In principle, yes — place any esp\_hosted `network_adapter.bin` for ESP32-C6 in `slave_fw_bin/`. Verify it with `esptool image-info` first. Only v2.11.6 has been tested.
 
 **What if I don't have the `just` tool?**
 Run the ESP-IDF commands directly:
@@ -410,7 +410,7 @@ Run the ESP-IDF commands directly:
 ```bash
 # Download C6 firmware (if not already present)
 curl -L -o components/ota_littlefs/slave_fw_bin/network_adapter.bin \
-    https://esphome.github.io/esp-hosted-firmware/v2.9.7/network_adapter_esp32c6.bin
+    https://espressif.github.io/arduino-esp32/hosted/esp32c6-v2.11.6.bin
 
 # Build and flash
 idf.py set-target esp32p4
@@ -423,7 +423,7 @@ idf.py -p /dev/cu.wchusbserial110 flash monitor
 - [Elecrow CrowPanel P4 repo](https://github.com/Elecrow-RD/CrowPanel-Advanced-7inch-ESP32-P4-HMI-AI-Display-1024x600-IPS-Touch-Screen) — schematics, factory code
 - [Elecrow issue #5](https://github.com/Elecrow-RD/CrowPanel-Advanced-7inch-ESP32-P4-HMI-AI-Display-1024x600-IPS-Touch-Screen/issues/5) — community discussion on C6 flash access
 - [esp-hosted-mcu](https://github.com/espressif/esp-hosted-mcu) — slave firmware source, OTA examples
-- [esp\_hosted v2.9.7 on Component Registry](https://components.espressif.com/components/espressif/esp_hosted/versions/2.9.7) — managed component used by this project
+- [esp\_hosted v2.11.6 on Component Registry](https://components.espressif.com/components/espressif/esp_hosted/versions/2.11.6) — managed component used by this project
 - [tymorton/esp32-p4-c6-espnow-enabler](https://github.com/tymorton/esp32-p4-c6-espnow-enabler) — independent C6 OTA tool (v2.6.7 target, LittleFS method)
 - [esp-serial-flasher](https://github.com/espressif/esp-serial-flasher) — alternative: SDIO download mode flash (requires 1 wire to GPIO9 test pad)
 

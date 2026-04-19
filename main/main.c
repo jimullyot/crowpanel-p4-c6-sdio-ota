@@ -25,7 +25,7 @@
 #include "esp_hosted.h"
 
 /* These headers exist in the stock OTA example but may not be public API.
- * If compilation fails here, check the actual esp_hosted v2.9.7 header layout:
+ * If compilation fails here, check the actual esp_hosted header layout:
  *   find managed_components -name "*.h" | grep hosted
  * Then update includes accordingly. */
 #if __has_include("esp_hosted_ota.h")
@@ -45,6 +45,9 @@
 #include "ota_littlefs.h"
 
 static const char *TAG = "c6-sdio-ota";
+static const uint32_t kTargetFwMajor = 2;
+static const uint32_t kTargetFwMinor = 11;
+static const uint32_t kTargetFwPatch = 6;
 
 /* Millisecond timestamp since boot */
 static int64_t ms_since_boot(void) {
@@ -52,7 +55,7 @@ static int64_t ms_since_boot(void) {
 }
 
 /* Phase 1: Query C6 firmware version
- * Returns true if C6 already runs v2.9.7 (OTA not needed), false otherwise. */
+ * Returns true if C6 already runs target firmware (OTA not needed), false otherwise. */
 static bool phase_query_version(void) {
     ESP_LOGW(TAG, "[PHASE] 1/5 VERSION-QUERY start t=%" PRId64 "ms", ms_since_boot());
 
@@ -62,12 +65,13 @@ static bool phase_query_version(void) {
     if (ret == ESP_OK) {
         ESP_LOGI(TAG, "[DIAG] C6 firmware: %" PRIu32 ".%" PRIu32 ".%" PRIu32,
                  ver.major1, ver.minor1, ver.patch1);
-        if (ver.major1 == 2 && ver.minor1 == 9 && ver.patch1 == 7) {
-            ESP_LOGI(TAG, "[PASS] C6 already at v2.9.7 — OTA not needed");
+        if (ver.major1 == kTargetFwMajor && ver.minor1 == kTargetFwMinor && ver.patch1 == kTargetFwPatch) {
+            ESP_LOGI(TAG, "[PASS] C6 already at v%" PRIu32 ".%" PRIu32 ".%" PRIu32 " — OTA not needed",
+                     kTargetFwMajor, kTargetFwMinor, kTargetFwPatch);
             return true;
         }
-        ESP_LOGI(TAG, "[DIAG] C6 needs upgrade from %" PRIu32 ".%" PRIu32 ".%" PRIu32 " to 2.9.7",
-                 ver.major1, ver.minor1, ver.patch1);
+        ESP_LOGI(TAG, "[DIAG] C6 needs upgrade from %" PRIu32 ".%" PRIu32 ".%" PRIu32 " to %" PRIu32 ".%" PRIu32 ".%" PRIu32,
+                 ver.major1, ver.minor1, ver.patch1, kTargetFwMajor, kTargetFwMinor, kTargetFwPatch);
     } else {
         ESP_LOGW(TAG, "[WARN] Version query failed: %s (0x%x) — expected for v2.3.0 (RPC timeout)",
                  esp_err_to_name(ret), ret);
@@ -129,10 +133,12 @@ static void phase_verify(void) {
     if (ret == ESP_OK) {
         ESP_LOGI(TAG, "[DIAG] C6 version after OTA: %" PRIu32 ".%" PRIu32 ".%" PRIu32,
                  ver.major1, ver.minor1, ver.patch1);
-        if (ver.major1 == 2 && ver.minor1 == 9 && ver.patch1 == 7) {
-            ESP_LOGI(TAG, "[PASS] *** C6 UPGRADED TO v2.9.7 — SUCCESS ***");
+        if (ver.major1 == kTargetFwMajor && ver.minor1 == kTargetFwMinor && ver.patch1 == kTargetFwPatch) {
+            ESP_LOGI(TAG, "[PASS] *** C6 UPGRADED TO v%" PRIu32 ".%" PRIu32 ".%" PRIu32 " — SUCCESS ***",
+                     kTargetFwMajor, kTargetFwMinor, kTargetFwPatch);
         } else {
-            ESP_LOGW(TAG, "[WARN] Version changed but not to 2.9.7 — unexpected");
+            ESP_LOGW(TAG, "[WARN] Version changed but not to %" PRIu32 ".%" PRIu32 ".%" PRIu32 " — unexpected",
+                     kTargetFwMajor, kTargetFwMinor, kTargetFwPatch);
         }
     } else {
         ESP_LOGW(TAG, "[WARN] Post-OTA version query failed: %s (0x%x)", esp_err_to_name(ret), ret);
@@ -181,7 +187,7 @@ void app_main(void)
     ESP_LOGI(TAG, "[PASS] esp_hosted_init OK in %" PRId64 "ms", hosted_init_time);
 
     /* esp_hosted_connect_to_slave() is in the stock OTA example.
-     * If it doesn't exist in v2.9.7, esp_hosted_init() may handle
+     * If it doesn't exist in current esp_hosted, esp_hosted_init() may handle
      * the SDIO handshake. Remove this call if build fails. */
     ESP_LOGI(TAG, "[DIAG] Connecting to C6 slave...");
     int64_t connect_start = ms_since_boot();
@@ -200,7 +206,12 @@ void app_main(void)
     bool already_upgraded = phase_query_version();
     if (already_upgraded) {
         ESP_LOGW(TAG, "[PHASE] 5/5 SUMMARY t=%" PRId64 "ms", ms_since_boot());
-        ESP_LOGW(TAG, "  RESULT: C6 already at v2.9.7 — no OTA needed");
+        ESP_LOGW(TAG, "  RESULT: C6 already at v%" PRIu32 ".%" PRIu32 ".%" PRIu32 " — no OTA needed",
+                 kTargetFwMajor, kTargetFwMinor, kTargetFwPatch);
+        ESP_LOGW(TAG, "==========================================================");
+        ESP_LOGW(TAG, "  C6 UPDATE COMPLETE — no changes needed.");
+        ESP_LOGW(TAG, "  Please unplug the ESP32 and plug it back in.");
+        ESP_LOGW(TAG, "==========================================================");
         goto halt;
     }
 
@@ -222,15 +233,24 @@ void app_main(void)
     ESP_LOGW(TAG, "==========================================================");
     if (ota_result == ESP_HOSTED_SLAVE_OTA_COMPLETED) {
         ESP_LOGW(TAG, "  RESULT: OTA TRANSFER SUCCEEDED");
-        ESP_LOGW(TAG, "  Next: Restore normal firmware and check WiFi stability");
+        ESP_LOGW(TAG, "==========================================================");
+        ESP_LOGW(TAG, "  C6 UPDATE COMPLETE — firmware upgraded successfully.");
+        ESP_LOGW(TAG, "  Please unplug the ESP32 and plug it back in.");
+        ESP_LOGW(TAG, "==========================================================");
     } else if (ota_result == ESP_HOSTED_SLAVE_OTA_NOT_REQUIRED) {
         ESP_LOGW(TAG, "  RESULT: OTA NOT REQUIRED (already up to date)");
+        ESP_LOGW(TAG, "==========================================================");
+        ESP_LOGW(TAG, "  C6 UPDATE COMPLETE — no changes needed.");
+        ESP_LOGW(TAG, "  Please unplug the ESP32 and plug it back in.");
+        ESP_LOGW(TAG, "==========================================================");
     } else {
         ESP_LOGW(TAG, "  RESULT: OTA FAILED");
-        ESP_LOGW(TAG, "  Next: Analyze [FAIL] and [DIAG] lines above");
+        ESP_LOGW(TAG, "  Analyze [FAIL] and [DIAG] lines above.");
+        ESP_LOGW(TAG, "==========================================================");
+        ESP_LOGW(TAG, "  C6 UPDATE FAILED — see errors above.");
+        ESP_LOGW(TAG, "  Please unplug the ESP32 and plug it back in to retry.");
+        ESP_LOGW(TAG, "==========================================================");
     }
-    ESP_LOGW(TAG, "==========================================================");
-    ESP_LOGW(TAG, "  Halting. Reset board to run again.");
 
 halt:
     /* Spin forever — don't restart, let user read logs */
