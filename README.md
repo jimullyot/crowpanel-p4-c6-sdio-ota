@@ -13,14 +13,14 @@ USB updates reach the host (ESP32-P4) easily. The C6 has no exposed UART or USB 
 ## How It Works
 
 ```
-┌──────────────────┐    SDIO OTA RPC     ┌──────────────────┐
-│    ESP32-P4       │───────────────────▶│    ESP32-C6       │
-│   (this app)      │   1-bit, 10 MHz    │  (co-processor)   │
-│                   │                    │                   │
-│  LittleFS part.   │   1.5 KB chunks    │  Writes to        │
-│  holds C6 binary  │───────────────────▶│  inactive OTA     │
-│  (~1.1 MB)        │   ~15 seconds      │  partition         │
-└──────────────────┘                    └──────────────────┘
+┌───────────────────┐    SDIO OTA RPC    ┌──────────────────┐
+│    ESP32-P4       │───────────────────▶│    ESP32-C6      │
+│   (this app)      │   1-bit, 10 MHz    │  (co-processor)  │
+│                   │                    │                  │
+│  LittleFS part.   │   1.5 KB chunks    │  Writes to       │
+│  holds C6 binary  │───────────────────▶│  inactive OTA    │
+│  (~1.1 MB)        │   ~15 seconds      │  partition       │
+└───────────────────┘                    └──────────────────┘
 ```
 
 1. Flash this app to the P4 (replaces your normal firmware temporarily)
