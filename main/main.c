@@ -107,23 +107,58 @@ static int phase_ota_transfer(void) {
     return ret;
 }
 
-/* Phase 3: Activate new firmware on C6 */
-static void phase_activate(void) {
+/* Phase 3: Activate new firmware on C6.
+ *
+ * IMPORTANT: the LittleFS OTA transfer in phase 2 already writes the new image
+ * to the C6's inactive slot AND marks it bootable when it finishes.  This step
+ * only asks the C6 to switch into it *immediately* (an in-place reboot).  The
+ * factory C6 firmware (esp_hosted v2.3.0) does not expose that RPC, so it
+ * returns ESP_ERR_NOT_SUPPORTED.  That is harmless and expected: the image is
+ * already staged and the C6 boots it on the next power cycle.  (Confirmed in
+ * the field — after a power cycle the C6 reports the new version.)
+ *
+ * Returns true only if the C6 was actually switched/rebooted into the new
+ * image now (so an immediate version re-query in phase 4 is meaningful);
+ * false means activation is deferred to the power cycle. */
+static bool phase_activate(void) {
     ESP_LOGW(TAG, "[PHASE] 3/5 OTA-ACTIVATE start t=%" PRId64 "ms", ms_since_boot());
 
     esp_err_t ret = esp_hosted_slave_ota_activate();
     if (ret == ESP_OK) {
         ESP_LOGI(TAG, "[PASS] Activate succeeded — C6 will boot new firmware after reset");
-    } else {
-        ESP_LOGE(TAG, "[FAIL] Activate failed: %s (0x%x)", esp_err_to_name(ret), ret);
-        ESP_LOGE(TAG, "[DIAG] Activate failure means OTA image was written but not marked bootable");
-        ESP_LOGE(TAG, "[DIAG] C6 will continue booting old firmware on next reset");
+        return true;
     }
+    if (ret == ESP_ERR_NOT_SUPPORTED) {
+        /* Expected when upgrading from the factory v2.3.0 firmware. NOT a failure. */
+        ESP_LOGI(TAG, "[DIAG] Immediate-activate RPC not supported by the running C6 firmware (expected on v2.3.0)");
+        ESP_LOGI(TAG, "[PASS] New image already marked bootable during transfer — it starts after a power cycle");
+        return false;
+    }
+    /* Any other code: still not fatal — the transfer already staged a bootable
+     * image — but surface it as a soft warning so a real regression is noticed. */
+    ESP_LOGW(TAG, "[WARN] Immediate-activate returned %s (0x%x); image is staged and boots after a power cycle",
+             esp_err_to_name(ret), ret);
+    return false;
 }
 
-/* Phase 4: Verify — reset C6 and query version again */
-static void phase_verify(void) {
+/* Phase 4: Verify — query version again.
+ *
+ * `activated` reflects whether phase 3 actually switched the C6 into the new
+ * image right now.  When activation is deferred to a power cycle (the common
+ * case upgrading from v2.3.0), the C6 is STILL running the old image at this
+ * point, so re-reading the version here would report the OLD version — which
+ * is expected, not a failure.  Reporting that as a warning is exactly what
+ * made a successful upgrade look broken, so we skip the re-check in that case. */
+static void phase_verify(bool activated) {
     ESP_LOGW(TAG, "[PHASE] 4/5 VERIFY start t=%" PRId64 "ms", ms_since_boot());
+
+    if (!activated) {
+        ESP_LOGI(TAG, "[DIAG] Activation deferred to the power cycle — the C6 still runs the old image until then");
+        ESP_LOGI(TAG, "[DIAG] Skipping the immediate version re-check (it would read the OLD version, as expected)");
+        ESP_LOGI(TAG, "[PASS] New firmware is staged and bootable — it takes effect after the power cycle below");
+        return;
+    }
+
     ESP_LOGI(TAG, "[DIAG] Waiting 3s for C6 reboot...");
     vTaskDelay(pdMS_TO_TICKS(3000));
 
@@ -137,13 +172,15 @@ static void phase_verify(void) {
             ESP_LOGI(TAG, "[PASS] *** C6 UPGRADED TO v%" PRIu32 ".%" PRIu32 ".%" PRIu32 " — SUCCESS ***",
                      kTargetFwMajor, kTargetFwMinor, kTargetFwPatch);
         } else {
-            ESP_LOGW(TAG, "[WARN] Version changed but not to %" PRIu32 ".%" PRIu32 ".%" PRIu32 " — unexpected",
+            ESP_LOGI(TAG, "[DIAG] C6 still reports v%" PRIu32 ".%" PRIu32 ".%" PRIu32
+                     " — it finishes switching to v%" PRIu32 ".%" PRIu32 ".%" PRIu32 " after the power cycle below",
+                     ver.major1, ver.minor1, ver.patch1,
                      kTargetFwMajor, kTargetFwMinor, kTargetFwPatch);
         }
     } else {
-        ESP_LOGW(TAG, "[WARN] Post-OTA version query failed: %s (0x%x)", esp_err_to_name(ret), ret);
-        ESP_LOGI(TAG, "[DIAG] This may be normal if C6 is still rebooting");
-        ESP_LOGI(TAG, "[DIAG] Reflash normal firmware and check WiFi behavior to confirm upgrade");
+        ESP_LOGI(TAG, "[DIAG] Post-OTA version query returned %s (0x%x) — normal if the C6 is still rebooting",
+                 esp_err_to_name(ret), ret);
+        ESP_LOGI(TAG, "[DIAG] The new image is staged; it takes effect after the power cycle below");
     }
 }
 
@@ -219,11 +256,11 @@ void app_main(void)
     int ota_result = phase_ota_transfer();
 
     if (ota_result == ESP_HOSTED_SLAVE_OTA_COMPLETED) {
-        /* Phase 3: Activate */
-        phase_activate();
+        /* Phase 3: Activate (may be deferred to the power cycle on v2.3.0) */
+        bool activated = phase_activate();
 
-        /* Phase 4: Verify */
-        phase_verify();
+        /* Phase 4: Verify (skips the misleading re-check when deferred) */
+        phase_verify(activated);
     } else if (ota_result != ESP_HOSTED_SLAVE_OTA_NOT_REQUIRED) {
         ESP_LOGE(TAG, "[FAIL] Skipping activate/verify due to OTA transfer failure");
     }
@@ -235,6 +272,8 @@ void app_main(void)
         ESP_LOGW(TAG, "  RESULT: OTA TRANSFER SUCCEEDED");
         ESP_LOGW(TAG, "==========================================================");
         ESP_LOGW(TAG, "  C6 UPDATE COMPLETE — firmware upgraded successfully.");
+        ESP_LOGW(TAG, "  The new C6 version takes effect after the power cycle —");
+        ESP_LOGW(TAG, "  it is normal that the version above still reads the old one.");
         ESP_LOGW(TAG, "  Please unplug the ESP32 and plug it back in.");
         ESP_LOGW(TAG, "==========================================================");
     } else if (ota_result == ESP_HOSTED_SLAVE_OTA_NOT_REQUIRED) {

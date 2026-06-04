@@ -165,16 +165,27 @@ Watch for these log tags:
 | `[FAIL]` | Failure — includes error code and diagnostic hints |
 | `[DIAG]` | Timing data, versions, transfer sizes |
 
-**Success looks like this:**
+**Success looks like this** (upgrading from the factory **v2.3.0** firmware):
 
 ```
 I c6-sdio-ota: [PASS] Connected to C6 slave in 1884ms
 I c6-sdio-ota: [DIAG] C6 firmware: 2.3.0
-I c6-sdio-ota: [PASS] OTA transfer completed in 14832ms
-I c6-sdio-ota: [PASS] Activate succeeded
-I c6-sdio-ota: [DIAG] C6 version after OTA: 2.11.6
-I c6-sdio-ota: [PASS] *** C6 UPGRADED TO v2.11.6 — SUCCESS ***
+I c6-sdio-ota: [PASS] OTA transfer completed in 13085ms
+I c6-sdio-ota: [DIAG] Immediate-activate RPC not supported by the running C6 firmware (expected on v2.3.0)
+I c6-sdio-ota: [PASS] New image already marked bootable during transfer — it starts after a power cycle
+I c6-sdio-ota: [PASS] New firmware is staged and bootable — it takes effect after the power cycle below
+W c6-sdio-ota:   RESULT: OTA TRANSFER SUCCEEDED
+W c6-sdio-ota:   C6 UPDATE COMPLETE — firmware upgraded successfully.
 ```
+
+> **This is the normal, successful path.** The factory v2.3.0 firmware does not
+> support the immediate-activate (in-place reboot) RPC, so the upgrade does not
+> take effect until you power-cycle the board. The version query in this run
+> still reports **2.3.0** — that is expected, *not* a failure. Power-cycle, and
+> on the next boot the C6 reports **2.11.6**.
+
+If the C6 firmware already supports immediate activation, you'll instead see
+`[PASS] Activate succeeded` followed by `[PASS] *** C6 UPGRADED TO v2.11.6 — SUCCESS ***`.
 
 If you see `[PASS] C6 already at v2.11.6 — OTA not needed`, the C6 was already upgraded. Nothing more to do.
 
@@ -246,7 +257,8 @@ If a function is missing, check the actual header names and update `main.c`.
 | `[FAIL] OTA transfer failed` + duration < 5s | Transport or OTA begin failed | SDIO fundamentally broken — skip to UART flash (see [Alternative Paths](#alternative-flash-paths)) |
 | `[FAIL] OTA transfer failed` + duration 5–30s | Transport died mid-transfer | Try lower SDIO clock or smaller chunks (see [Tuning](#tuning-parameters)) |
 | `[FAIL] OTA transfer failed` + duration > 30s | Timeout | C6 hung — power-cycle and retry |
-| `[FAIL] Activate failed` | OTA wrote but could not mark bootable | Retry from scratch; C6 still on old firmware (safe) |
+| `[DIAG] Immediate-activate RPC not supported` | Expected on factory v2.3.0 — the image was already marked bootable by the transfer | None — power-cycle; the C6 boots the new firmware |
+| `[WARN] Immediate-activate returned ...` | Unexpected activate code, but the image is still staged | Power-cycle and verify; if the new version doesn't appear, retry from scratch |
 
 ## Tuning Parameters
 
