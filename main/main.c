@@ -148,15 +148,21 @@ static bool phase_activate(void) {
  * case upgrading from v2.3.0), the C6 is STILL running the old image at this
  * point, so re-reading the version here would report the OLD version — which
  * is expected, not a failure.  Reporting that as a warning is exactly what
- * made a successful upgrade look broken, so we skip the re-check in that case. */
-static void phase_verify(bool activated) {
+ * made a successful upgrade look broken, so we skip the re-check in that case.
+ *
+ * Returns true only if the C6 is confirmed running the target version *now*
+ * (immediate activation succeeded and the re-query matches).  False means the
+ * upgrade is staged but takes effect on the next power cycle — the caller uses
+ * this to decide between the "please power cycle" and "press Ctrl+] to exit"
+ * guidance in the summary. */
+static bool phase_verify(bool activated) {
     ESP_LOGW(TAG, "[PHASE] 4/5 VERIFY start t=%" PRId64 "ms", ms_since_boot());
 
     if (!activated) {
         ESP_LOGI(TAG, "[DIAG] Activation deferred to the power cycle — the C6 still runs the old image until then");
         ESP_LOGI(TAG, "[DIAG] Skipping the immediate version re-check (it would read the OLD version, as expected)");
         ESP_LOGI(TAG, "[PASS] New firmware is staged and bootable — it takes effect after the power cycle below");
-        return;
+        return false;
     }
 
     ESP_LOGI(TAG, "[DIAG] Waiting 3s for C6 reboot...");
@@ -171,17 +177,18 @@ static void phase_verify(bool activated) {
         if (ver.major1 == kTargetFwMajor && ver.minor1 == kTargetFwMinor && ver.patch1 == kTargetFwPatch) {
             ESP_LOGI(TAG, "[PASS] *** C6 UPGRADED TO v%" PRIu32 ".%" PRIu32 ".%" PRIu32 " — SUCCESS ***",
                      kTargetFwMajor, kTargetFwMinor, kTargetFwPatch);
-        } else {
-            ESP_LOGI(TAG, "[DIAG] C6 still reports v%" PRIu32 ".%" PRIu32 ".%" PRIu32
-                     " — it finishes switching to v%" PRIu32 ".%" PRIu32 ".%" PRIu32 " after the power cycle below",
-                     ver.major1, ver.minor1, ver.patch1,
-                     kTargetFwMajor, kTargetFwMinor, kTargetFwPatch);
+            return true;
         }
+        ESP_LOGI(TAG, "[DIAG] C6 still reports v%" PRIu32 ".%" PRIu32 ".%" PRIu32
+                 " — it finishes switching to v%" PRIu32 ".%" PRIu32 ".%" PRIu32 " after the power cycle below",
+                 ver.major1, ver.minor1, ver.patch1,
+                 kTargetFwMajor, kTargetFwMinor, kTargetFwPatch);
     } else {
         ESP_LOGI(TAG, "[DIAG] Post-OTA version query returned %s (0x%x) — normal if the C6 is still rebooting",
                  esp_err_to_name(ret), ret);
         ESP_LOGI(TAG, "[DIAG] The new image is staged; it takes effect after the power cycle below");
     }
+    return false;
 }
 
 void app_main(void)
@@ -247,7 +254,9 @@ void app_main(void)
                  kTargetFwMajor, kTargetFwMinor, kTargetFwPatch);
         ESP_LOGW(TAG, "==========================================================");
         ESP_LOGW(TAG, "  C6 UPDATE COMPLETE — no changes needed.");
-        ESP_LOGW(TAG, "  Please unplug the ESP32 and plug it back in.");
+        ESP_LOGW(TAG, "  C6 is running v%" PRIu32 ".%" PRIu32 ".%" PRIu32 ".",
+                 kTargetFwMajor, kTargetFwMinor, kTargetFwPatch);
+        ESP_LOGW(TAG, "  Press Ctrl+] to exit.");
         ESP_LOGW(TAG, "==========================================================");
         goto halt;
     }
@@ -255,12 +264,15 @@ void app_main(void)
     /* Phase 2: OTA transfer */
     int ota_result = phase_ota_transfer();
 
+    bool on_target_now = false;
     if (ota_result == ESP_HOSTED_SLAVE_OTA_COMPLETED) {
         /* Phase 3: Activate (may be deferred to the power cycle on v2.3.0) */
         bool activated = phase_activate();
 
-        /* Phase 4: Verify (skips the misleading re-check when deferred) */
-        phase_verify(activated);
+        /* Phase 4: Verify (skips the misleading re-check when deferred).
+         * on_target_now is true only if the C6 is already running the new
+         * firmware; otherwise the new image takes effect after a power cycle. */
+        on_target_now = phase_verify(activated);
     } else if (ota_result != ESP_HOSTED_SLAVE_OTA_NOT_REQUIRED) {
         ESP_LOGE(TAG, "[FAIL] Skipping activate/verify due to OTA transfer failure");
     }
@@ -272,15 +284,28 @@ void app_main(void)
         ESP_LOGW(TAG, "  RESULT: OTA TRANSFER SUCCEEDED");
         ESP_LOGW(TAG, "==========================================================");
         ESP_LOGW(TAG, "  C6 UPDATE COMPLETE — firmware upgraded successfully.");
-        ESP_LOGW(TAG, "  The new C6 version takes effect after the power cycle —");
-        ESP_LOGW(TAG, "  it is normal that the version above still reads the old one.");
-        ESP_LOGW(TAG, "  Please unplug the ESP32 and plug it back in.");
+        if (on_target_now) {
+            /* Already running the new firmware (immediate activation worked) —
+             * no power cycle needed, just exit. */
+            ESP_LOGW(TAG, "  C6 is now running v%" PRIu32 ".%" PRIu32 ".%" PRIu32 ".",
+                     kTargetFwMajor, kTargetFwMinor, kTargetFwPatch);
+            ESP_LOGW(TAG, "  Press Ctrl+] to exit.");
+        } else {
+            /* Staged — takes effect on the next power cycle.  The Ctrl+] hint
+             * intentionally waits until the post-reboot run confirms the new
+             * version, so the user power-cycles first. */
+            ESP_LOGW(TAG, "  The new C6 version takes effect after the power cycle —");
+            ESP_LOGW(TAG, "  it is normal that the version above still reads the old one.");
+            ESP_LOGW(TAG, "  Please unplug the ESP32 and plug it back in.");
+        }
         ESP_LOGW(TAG, "==========================================================");
     } else if (ota_result == ESP_HOSTED_SLAVE_OTA_NOT_REQUIRED) {
         ESP_LOGW(TAG, "  RESULT: OTA NOT REQUIRED (already up to date)");
         ESP_LOGW(TAG, "==========================================================");
         ESP_LOGW(TAG, "  C6 UPDATE COMPLETE — no changes needed.");
-        ESP_LOGW(TAG, "  Please unplug the ESP32 and plug it back in.");
+        ESP_LOGW(TAG, "  C6 is running v%" PRIu32 ".%" PRIu32 ".%" PRIu32 ".",
+                 kTargetFwMajor, kTargetFwMinor, kTargetFwPatch);
+        ESP_LOGW(TAG, "  Press Ctrl+] to exit.");
         ESP_LOGW(TAG, "==========================================================");
     } else {
         ESP_LOGW(TAG, "  RESULT: OTA FAILED");
