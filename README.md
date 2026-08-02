@@ -10,6 +10,11 @@ USB updates reach the host (ESP32-P4) easily. The C6 has no exposed UART or USB 
 
 **This tool runs OTA without WiFi.** A dedicated IDF application on the P4 initializes the SDIO transport, transfers the new C6 firmware from a LittleFS partition, and activates it. WiFi never starts, so the SDIO bus stays stable for the full transfer.
 
+Two things worth knowing before you start, both of which show up on newer boards:
+
+- **Not every board still ships with v2.3.0.** A V1.1 panel bought in 2026 arrived with C6 v2.12.3 — newer than the v2.11.6 here. The app compares versions and exits without writing anything rather than downgrading, so "it did nothing" is the correct outcome in that case, not a failure.
+- **V1.1 panels are wired differently.** The SDIO data lines and the C6 reset line moved, so a build hard-wired for V1.0 cannot reach the C6 at all. The app works out which revision it is on and remembers it — see [Board revisions](#board-revisions).
+
 ## How It Works
 
 ```
@@ -36,19 +41,21 @@ The C6 upgrade persists across P4 reflashes — the C6 has its own flash.
 
 | Component | Version |
 |-----------|---------|
-| Board | CrowPanel Advanced 7" ESP32-P4 HMI (1024x600), PCB V1.0 |
-| Factory C6 firmware | esp\_hosted v2.3.0 (internal Espressif staging build) |
+| Board | CrowPanel Advanced 7" ESP32-P4 HMI (1024x600), PCB V1.0 and V1.1 |
+| Factory C6 firmware | esp\_hosted v2.3.0 (V1.0) / v2.12.3 (V1.1, 2026 boards) |
 | Target C6 firmware | esp\_hosted v2.11.6 |
 | ESP-IDF | v5.5.1 |
 | esp\_hosted component | v2.11.6 ([ESP Component Registry](https://components.espressif.com/components/espressif/esp_hosted/versions/2.11.6)) |
 
-**Result:** Succeeded on first attempt, 2026-02-16. Zero solder. C6 upgraded from v2.3.0 to v2.11.6 in about 15 seconds.
+**V1.0:** Succeeded on first attempt, 2026-02-16. Zero solder. C6 upgraded from v2.3.0 to v2.11.6 in about 15 seconds.
+
+**V1.1:** Verified 2026-08-01. The app worked out the revision on its own (one failed attempt on the V1.0 map, then a reboot onto the V1.1 map) and connected in 1.9 s. That board shipped with C6 v2.12.3 — newer than this tool carries — so it reported the version and exited without writing anything. See [Board revisions](#board-revisions).
 
 ## Prerequisites
 
 ### Hardware
 
-- **CrowPanel 7" ESP32-P4** (PCB V1.0 tested) connected via USB-C cable to the **upper** USB-C port (CH341 UART bridge)
+- **CrowPanel 7" ESP32-P4** (PCB V1.0 and V1.1 both tested; the app detects which) connected via USB-C cable to the **upper** USB-C port (CH341 UART bridge)
 - **CH341 USB-UART driver** — Linux: built into kernel. macOS: [download from WCH](http://www.wch-ic.com/downloads/CH341SER_MAC_ZIP.html) if `ls /dev/cu.wchusbserial*` shows nothing when the board is connected.
 
 ### Software
@@ -252,8 +259,9 @@ If a function is missing, check the actual header names and update `main.c`.
 
 | Serial output | Cause | Next step |
 |---|---|---|
-| `[FAIL] esp_hosted_init` | SDIO transport broken at init | Verify serial port, check that P4 GPIO32 reaches C6 EN pin |
-| `[FAIL] esp_hosted_connect_to_slave` | C6 not responding | Check C6 power (P37 test pad should read 3.3V) |
+| `[FAIL] esp_hosted_init` | SDIO transport broken at init | Verify serial port, check that the C6 EN pin is reachable (GPIO32 on V1.0, GPIO54 on V1.1) |
+| `[FAIL] esp_hosted_connect_to_slave`, once | Wrong pin map for this board revision | None — the app reboots and tries the other revision by itself. Watch for `Trying CrowPanel V1.1 wiring` on the next boot |
+| `[WARN] Tried every known wiring` | C6 answered on neither revision | Check C6 power (P37 test pad should read 3.3V) — this is the chip or the board, not the pin map |
 | `[FAIL] OTA transfer failed` + duration < 5s | Transport or OTA begin failed | SDIO fundamentally broken — skip to UART flash (see [Alternative Paths](#alternative-flash-paths)) |
 | `[FAIL] OTA transfer failed` + duration 5–30s | Transport died mid-transfer | Try lower SDIO clock or smaller chunks (see [Tuning](#tuning-parameters)) |
 | `[FAIL] OTA transfer failed` + duration > 30s | Timeout | C6 hung — power-cycle and retry |
