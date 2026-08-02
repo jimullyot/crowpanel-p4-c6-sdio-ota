@@ -43,11 +43,155 @@
 #include "esp_timer.h"
 #include "esp_app_desc.h"
 #include "ota_littlefs.h"
+#include "nvs.h"
+#include "esp_hosted_transport_config.h"
 
 static const char *TAG = "c6-sdio-ota";
+
+/* CrowPanel reaches the C6 differently depending on the PCB revision: V1.1
+ * reversed the SDIO data lines from IO14,15,16,17 to IO17,16,15,14 and moved
+ * the reset line. Nothing on the board reports which revision you have -- the
+ * only marking is silkscreen on the panel -- so the only way to know is to try
+ * one and see if the C6 answers.
+ *
+ * Guessing wrong does not look like a wiring fault, which is the reason this
+ * is worth probing for rather than leaving someone to find by hand. Card init
+ * and register reads are CMD52 traffic on the CMD line alone, so the bus
+ * enumerates perfectly and reports both function block sizes; only the CMD53
+ * data transfers that carry the slave's init packet ever touch these pins. The
+ * symptom is a healthy-looking bus that simply goes quiet. */
+struct board_wiring {
+    const char *revision;
+    int d0, d1, reset;
+};
+
+static const struct board_wiring kWirings[] = {
+    { "V1.0", 14, 15, 32 },
+    { "V1.1", 17, 16, 54 },
+};
+#define kWiringCount (sizeof(kWirings) / sizeof(kWirings[0]))
+
+#define NVS_BOARD_NAMESPACE "board"
+#define NVS_KEY_WIRING      "sdio_wiring"   /* index that last worked */
+#define NVS_KEY_UNPROVEN    "sdio_trying"   /* set while a guess is in flight */
+#define NVS_KEY_TRIES       "sdio_tries"    /* guesses made since the last success */
+
 static const uint32_t kTargetFwMajor = 2;
 static const uint32_t kTargetFwMinor = 11;
 static const uint32_t kTargetFwPatch = 6;
+
+/* What the C6 reported in phase 1, so the summary can state what is actually on
+ * the chip instead of assuming it equals the target. */
+static esp_hosted_coprocessor_fwver_t g_running_ver;
+
+/* Ordered version value, so "newer than us" is a comparison and not three. */
+static uint32_t fw_value(uint32_t major, uint32_t minor, uint32_t patch) {
+    return (major << 16) | (minor << 8) | patch;
+}
+
+/* Which entry of kWirings this boot is using, and whether we managed to apply
+ * it. Without the second flag a failed apply would let a later success be
+ * credited to a revision we never actually tried. */
+static uint8_t g_wiring;
+static bool g_wiring_applied;
+
+static void store_wiring(uint8_t index, uint8_t unproven, uint8_t tries) {
+    nvs_handle_t h;
+    if (nvs_open(NVS_BOARD_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) {
+        return;
+    }
+    nvs_set_u8(h, NVS_KEY_WIRING, index);
+    nvs_set_u8(h, NVS_KEY_UNPROVEN, unproven);
+    nvs_set_u8(h, NVS_KEY_TRIES, tries);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+static uint8_t load_wiring(uint8_t *unproven, uint8_t *tries) {
+    nvs_handle_t h;
+    uint8_t index = 0;
+    *unproven = 0;
+    *tries = 0;
+    if (nvs_open(NVS_BOARD_NAMESPACE, NVS_READONLY, &h) == ESP_OK) {
+        nvs_get_u8(h, NVS_KEY_WIRING, &index);
+        nvs_get_u8(h, NVS_KEY_UNPROVEN, unproven);
+        nvs_get_u8(h, NVS_KEY_TRIES, tries);
+        nvs_close(h);
+    }
+    return index < kWiringCount ? index : 0;
+}
+
+/* Pick a wiring and hand it to esp_hosted before the transport starts.
+ *
+ * This has to be a constructor. esp_hosted starts its transport from its own
+ * constructor, so by the time app_main runs the SDIO driver already holds a
+ * copy of the pins it read from Kconfig -- editing the config that late moves
+ * only the reset line, which reads as "the pin map changed and nothing
+ * happened". Constructors carrying a priority run before those without one,
+ * and esp_hosted's has none, so this lands first. esp_hosted_init() keeps a
+ * config that is already set and only falls back to Kconfig when there is
+ * none, which is what makes this the supported way in rather than a race.
+ *
+ * A wrong guess cannot be caught in the moment: the transport reboots the host
+ * rather than returning an error. So the guess is written down before it is
+ * tried and cleared only once the slave answers, which turns a reboot into the
+ * evidence that the guess was wrong. */
+static void __attribute__((constructor(101))) choose_wiring(void) {
+    esp_err_t nvs = nvs_flash_init();
+    if (nvs == ESP_ERR_NVS_NO_FREE_PAGES || nvs == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        nvs = nvs_flash_init();
+    }
+    if (nvs != ESP_OK) {
+        ESP_LOGW(TAG, "[WARN] NVS unavailable (%s) — keeping the built-in pin map",
+                 esp_err_to_name(nvs));
+        return;
+    }
+
+    uint8_t unproven = 0, tries = 0;
+    uint8_t index = load_wiring(&unproven, &tries);
+
+    if (unproven) {
+        if (tries >= kWiringCount) {
+            ESP_LOGW(TAG, "[WARN] Tried every known wiring and the C6 answered on none of them.");
+            ESP_LOGW(TAG, "[WARN] That points at the co-processor or the board, not the pin map.");
+            index = 0;
+            tries = 0;
+        } else {
+            ESP_LOGW(TAG, "[DIAG] No answer on %s wiring last boot — trying %s",
+                     kWirings[index].revision, kWirings[(index + 1) % kWiringCount].revision);
+            index = (index + 1) % kWiringCount;
+        }
+    }
+
+    /* The bus is 1-bit, so only D0 (data) and D1 (the slave's interrupt) are
+     * live; D2/D3 are left at their defaults. */
+    const struct board_wiring *w = &kWirings[index];
+    struct esp_hosted_sdio_config conf = INIT_DEFAULT_HOST_SDIO_CONFIG();
+    conf.pin_d0.pin = w->d0;
+    conf.pin_d1.pin = w->d1;
+    conf.pin_reset.pin = w->reset;
+    if (esp_hosted_sdio_set_config(&conf) != ESP_TRANSPORT_OK) {
+        ESP_LOGE(TAG, "[FAIL] Could not apply the %s pin map", w->revision);
+        return;
+    }
+
+    g_wiring = index;
+    g_wiring_applied = true;
+    store_wiring(index, 1, tries + 1);
+    ESP_LOGI(TAG, "[DIAG] Trying CrowPanel %s wiring: D0=%d D1=%d reset=%d",
+             w->revision, w->d0, w->d1, w->reset);
+}
+
+/* The slave answered, so this wiring is right. Later boots start here. */
+static void wiring_confirmed(void) {
+    if (!g_wiring_applied) {
+        return;
+    }
+    store_wiring(g_wiring, 0, 0);
+    ESP_LOGI(TAG, "[PASS] This is a CrowPanel %s board — remembered for next time",
+             kWirings[g_wiring].revision);
+}
 
 /* Millisecond timestamp since boot */
 static int64_t ms_since_boot(void) {
@@ -63,10 +207,18 @@ static bool phase_query_version(void) {
     esp_err_t ret = esp_hosted_get_coprocessor_fwversion(&ver);
 
     if (ret == ESP_OK) {
+        g_running_ver = ver;
         ESP_LOGI(TAG, "[DIAG] C6 firmware: %" PRIu32 ".%" PRIu32 ".%" PRIu32,
                  ver.major1, ver.minor1, ver.patch1);
-        if (ver.major1 == kTargetFwMajor && ver.minor1 == kTargetFwMinor && ver.patch1 == kTargetFwPatch) {
-            ESP_LOGI(TAG, "[PASS] C6 already at v%" PRIu32 ".%" PRIu32 ".%" PRIu32 " — OTA not needed",
+        /* At or past what we carry means there is nothing useful to write. An
+         * exact-match test here would have treated a newer C6 as out of date
+         * and quietly downgraded it. */
+        if (fw_value(ver.major1, ver.minor1, ver.patch1) >=
+            fw_value(kTargetFwMajor, kTargetFwMinor, kTargetFwPatch)) {
+            ESP_LOGI(TAG, "[PASS] C6 is at v%" PRIu32 ".%" PRIu32 ".%" PRIu32
+                     ", at or past the v%" PRIu32 ".%" PRIu32 ".%" PRIu32
+                     " this tool carries — OTA not needed",
+                     ver.major1, ver.minor1, ver.patch1,
                      kTargetFwMajor, kTargetFwMinor, kTargetFwPatch);
             return true;
         }
@@ -205,6 +357,14 @@ void app_main(void)
     esp_err_t ret;
 
     ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        /* The wiring probe below is useless without somewhere to write down
+         * what it learned, so a full partition is worth clearing rather than
+         * giving up on. Nothing else in this app keeps state. */
+        ESP_LOGW(TAG, "[WARN] NVS unusable (%s) — erasing it", esp_err_to_name(ret));
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ret = nvs_flash_init();
+    }
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "[FAIL] NVS init failed: %s", esp_err_to_name(ret));
         return;
@@ -240,10 +400,17 @@ void app_main(void)
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "[FAIL] esp_hosted_connect_to_slave failed: %s (0x%x) after %" PRId64 "ms",
                  esp_err_to_name(ret), ret, connect_time);
-        ESP_LOGE(TAG, "[FAIL] SDIO handshake with C6 failed — transport broken");
-        return;
+        ESP_LOGE(TAG, "[FAIL] SDIO handshake with C6 failed — the C6 version is unreadable until this succeeds");
+        ESP_LOGE(TAG, "[DIAG] If the log above shows the card enumerating (block sizes read, data path");
+        ESP_LOGE(TAG, "[DIAG] opened) then the bus is fine and the slave simply never reported ready —");
+        ESP_LOGE(TAG, "[DIAG] which is what the wrong data-line map looks like. Rebooting to try the");
+        ESP_LOGE(TAG, "[DIAG] other CrowPanel revision; the guess is already written down.");
+        ESP_LOGE(TAG, "[DIAG] If the card never enumerated: C6 power (P37 test pad = 3.3V), reset GPIO[%d].",
+                 kWirings[g_wiring].reset);
+        esp_restart();
     }
     ESP_LOGI(TAG, "[PASS] Connected to C6 slave in %" PRId64 "ms", connect_time);
+    wiring_confirmed();
     ESP_LOGW(TAG, "[PHASE] 0/5 INIT complete t=%" PRId64 "ms", ms_since_boot());
 
     /* Phase 1: Version query */
@@ -251,10 +418,12 @@ void app_main(void)
     if (already_upgraded) {
         ESP_LOGW(TAG, "[PHASE] 5/5 SUMMARY t=%" PRId64 "ms", ms_since_boot());
         ESP_LOGW(TAG, "  RESULT: C6 already at v%" PRIu32 ".%" PRIu32 ".%" PRIu32 " — no OTA needed",
-                 kTargetFwMajor, kTargetFwMinor, kTargetFwPatch);
+                 g_running_ver.major1, g_running_ver.minor1, g_running_ver.patch1);
         ESP_LOGW(TAG, "==========================================================");
         ESP_LOGW(TAG, "  C6 UPDATE COMPLETE — no changes needed.");
-        ESP_LOGW(TAG, "  C6 is running v%" PRIu32 ".%" PRIu32 ".%" PRIu32 ".",
+        ESP_LOGW(TAG, "  C6 is running v%" PRIu32 ".%" PRIu32 ".%" PRIu32
+                 "; this tool carries v%" PRIu32 ".%" PRIu32 ".%" PRIu32 ".",
+                 g_running_ver.major1, g_running_ver.minor1, g_running_ver.patch1,
                  kTargetFwMajor, kTargetFwMinor, kTargetFwPatch);
         ESP_LOGW(TAG, "  Press Ctrl+] to exit.");
         ESP_LOGW(TAG, "==========================================================");

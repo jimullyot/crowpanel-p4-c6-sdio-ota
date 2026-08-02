@@ -321,15 +321,23 @@ Running this tool a second time is safe. If the C6 already runs v2.11.6, the app
 
 | Parameter | Value |
 |-----------|-------|
-| SDIO bus | 1-bit mode, GPIO14 (D0) |
+| SDIO bus | 1-bit mode, D0 = GPIO14 (V1.0) or GPIO17 (V1.1) |
 | SDIO clock | 10 MHz (configurable) |
 | SDIO CLK | P4 GPIO18 → C6 IO19 |
 | SDIO CMD | P4 GPIO19 → C6 IO18 |
-| C6 reset | P4 GPIO32 → C6 EN (active high) |
+| C6 reset | P4 GPIO32 (V1.0) or GPIO54 (V1.1) → C6 EN (active high) |
 | C6 flash | 4 MB, dual OTA partitions (1920 KB each) |
 | Serial port | CH341 UART, upper USB-C |
 
 Series resistors with pullups to 3.3V terminate all six SDIO lines (D0–D3, CLK, CMD). Four-bit SDIO mode works electrically but remains untested for OTA.
+
+### Board revisions
+
+V1.1 panels reversed the SDIO data lines (IO14,15,16,17 became IO17,16,15,14) and moved the C6 reset line, so a build wired for V1.0 cannot talk to a V1.1 board. Nothing readable on the board says which revision it is; the only marking is the silkscreen (`7.0V1.0` / `7.0V1.1`).
+
+The app works this out for itself. It tries one pin map, and because a wrong map makes the transport reboot the host rather than return an error, it writes the guess to NVS *before* trying it and clears it only once the C6 answers — so a reboot is the evidence the guess was wrong, and the next boot tries the other map. Once a map works it is remembered, and later runs go straight to it. A board that answers on neither says so plainly instead of flipping forever.
+
+The catch this hides is that a wrong map does not look like a wiring fault: the SDIO card enumerates and reports its block sizes over CMD52 on the CMD line alone, and only the CMD53 data transfers ever touch the data pins. What you see is a healthy bus that goes quiet — indistinguishable from a C6 that is simply not ready.
 
 For the full hardware analysis — pin map, test pad locations, connector inventory — see [HARDWARE.md](HARDWARE.md).
 

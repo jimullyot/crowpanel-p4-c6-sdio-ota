@@ -31,6 +31,9 @@ CONFIG_ESP_HOSTED_SDIO_CLOCK_FREQ_KHZ=10000
 # CrowPanel SDIO pins (happen to match P4 Slot 1 defaults)
 CONFIG_ESP_HOSTED_PRIV_SDIO_PIN_CLK_SLOT_1=18
 CONFIG_ESP_HOSTED_PRIV_SDIO_PIN_CMD_SLOT_1=19
+# Data lines differ by PCB revision, so main.c overrides these at runtime and
+# these values only decide which revision gets tried first. V1.0 is the whole
+# existing fleet, so it goes first; V1.1 reversed D0-D3 to IO17,16,15,14.
 CONFIG_ESP_HOSTED_PRIV_SDIO_PIN_D0_SLOT_1=14
 CONFIG_ESP_HOSTED_PRIV_SDIO_PIN_D1_1BIT_BUS_SLOT_1=15
 
@@ -41,8 +44,18 @@ CONFIG_ESP_HOSTED_SDIO_GPIO_RESET_SLAVE=32
 # Delay after C6 reset to allow boot (v2.3.0 may be slow)
 CONFIG_ESP_HOSTED_SDIO_RESET_DELAY_MS=1500
 
-# RX streaming mode
-CONFIG_ESP_HOSTED_SDIO_OPTIMIZATION_RX_STREAMING_MODE=y
+# No RX optimization. Streaming mode needs a slave that speaks it, and this app
+# exists to talk to whatever C6 firmware a board shipped with. When the host
+# asks for streaming and the slave cannot answer, the SDIO card enumerates and
+# the data path opens and then the slave never reports ready -- the same
+# silence a wrong data-line map produces, which is what made these two so hard
+# to tell apart.
+#
+# This line was inert until the esp_hosted bump to v2.11.6: v2.9.7 had no such
+# option, so the first working run against a factory board was never actually
+# in streaming mode. Nothing to gain either way here -- the transfer is ~1.1 MB
+# once, and read throughput is not what makes this slow.
+CONFIG_ESP_HOSTED_SDIO_OPTIMIZATION_RX_NONE=y
 
 # Reset slave on host boot for clean state
 CONFIG_ESP_HOSTED_SLAVE_RESET_ON_EVERY_HOST_BOOTUP=y
