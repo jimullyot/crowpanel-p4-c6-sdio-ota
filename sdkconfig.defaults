@@ -28,18 +28,18 @@ CONFIG_ESP_HOSTED_SDIO_BUS_WIDTH=1
 # Conservative 10 MHz clock for OTA reliability
 CONFIG_ESP_HOSTED_SDIO_CLOCK_FREQ_KHZ=10000
 
-# CrowPanel SDIO pins (happen to match P4 Slot 1 defaults)
+# CrowPanel SDIO pins. CLK and CMD are the same on every revision.
 CONFIG_ESP_HOSTED_PRIV_SDIO_PIN_CLK_SLOT_1=18
 CONFIG_ESP_HOSTED_PRIV_SDIO_PIN_CMD_SLOT_1=19
-# Data lines differ by PCB revision, so main.c overrides these at runtime and
-# these values only decide which revision gets tried first. V1.0 is the whole
-# existing fleet, so it goes first; V1.1 reversed D0-D3 to IO17,16,15,14.
-CONFIG_ESP_HOSTED_PRIV_SDIO_PIN_D0_SLOT_1=14
-CONFIG_ESP_HOSTED_PRIV_SDIO_PIN_D1_1BIT_BUS_SLOT_1=15
+# Data and reset lines differ by PCB revision and main.c sets all three at
+# runtime before the transport starts, so these are only the values a build
+# would fall back to. They name V1.1, which is what main.c tries first.
+CONFIG_ESP_HOSTED_PRIV_SDIO_PIN_D0_SLOT_1=17
+CONFIG_ESP_HOSTED_PRIV_SDIO_PIN_D1_1BIT_BUS_SLOT_1=16
 
-# Reset pin: GPIO32, active high (R77 pullup on CrowPanel)
+# Reset, active high (R77 pullup on CrowPanel). GPIO54 on V1.1, GPIO32 on V1.0.
 CONFIG_ESP_HOSTED_SDIO_RESET_ACTIVE_HIGH=y
-CONFIG_ESP_HOSTED_SDIO_GPIO_RESET_SLAVE=32
+CONFIG_ESP_HOSTED_SDIO_GPIO_RESET_SLAVE=54
 
 # Delay after C6 reset to allow boot (v2.3.0 may be slow)
 CONFIG_ESP_HOSTED_SDIO_RESET_DELAY_MS=1500

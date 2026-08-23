@@ -49,7 +49,7 @@ The C6 upgrade persists across P4 reflashes — the C6 has its own flash.
 
 **V1.0:** Succeeded on first attempt, 2026-02-16. Zero solder. C6 upgraded from v2.3.0 to v2.11.6 in about 15 seconds.
 
-**V1.1:** Verified 2026-08-01. The app worked out the revision on its own (one failed attempt on the V1.0 map, then a reboot onto the V1.1 map) and connected in 1.9 s. That board shipped with C6 v2.12.3 — newer than this tool carries — so it reported the version and exited without writing anything. See [Board revisions](#board-revisions).
+**V1.1:** Verified 2026-08-01. The app worked out the revision on its own and connected in 1.9 s. That board shipped with C6 v2.12.3 — newer than this tool carries — so it reported the version and exited without writing anything. It cost a reboot to get there at the time, because V1.0 was tried first; V1.1 now leads, so it connects on the first attempt. See [Board revisions](#board-revisions).
 
 ## Prerequisites
 
@@ -260,7 +260,7 @@ If a function is missing, check the actual header names and update `main.c`.
 | Serial output | Cause | Next step |
 |---|---|---|
 | `[FAIL] esp_hosted_init` | SDIO transport broken at init | Verify serial port, check that the C6 EN pin is reachable (GPIO32 on V1.0, GPIO54 on V1.1) |
-| `[FAIL] esp_hosted_connect_to_slave`, once | Wrong pin map for this board revision | None — the app reboots and tries the other revision by itself. Watch for `Trying CrowPanel V1.1 wiring` on the next boot |
+| `[FAIL] esp_hosted_connect_to_slave`, once | Wrong pin map for this board revision | None — the app reboots and tries the other revision by itself. V1.1 is tried first, so on a V1.0 board watch for `Trying CrowPanel V1.0 wiring` on the next boot |
 | `[WARN] Tried every known wiring` | C6 answered on neither revision | Check C6 power (P37 test pad should read 3.3V) — this is the chip or the board, not the pin map |
 | `[FAIL] OTA transfer failed` + duration < 5s | Transport or OTA begin failed | SDIO fundamentally broken — skip to UART flash (see [Alternative Paths](#alternative-flash-paths)) |
 | `[FAIL] OTA transfer failed` + duration 5–30s | Transport died mid-transfer | Try lower SDIO clock or smaller chunks (see [Tuning](#tuning-parameters)) |
@@ -345,6 +345,8 @@ V1.1 panels reversed the SDIO data lines (IO14,15,16,17 became IO17,16,15,14) an
 
 The app works this out for itself. It tries one pin map, and because a wrong map makes the transport reboot the host rather than return an error, it writes the guess to NVS *before* trying it and clears it only once the C6 answers — so a reboot is the evidence the guess was wrong, and the next boot tries the other map. Once a map works it is remembered, and later runs go straight to it. A board that answers on neither says so plainly instead of flipping forever.
 
+**V1.1 is tried first**, since that is what is currently being sold. Whichever revision goes first is the one that never pays the reboot, so V1.0 boards now take the single extra reset that V1.1 boards used to.
+
 The catch this hides is that a wrong map does not look like a wiring fault: the SDIO card enumerates and reports its block sizes over CMD52 on the CMD line alone, and only the CMD53 data transfers ever touch the data pins. What you see is a healthy bus that goes quiet — indistinguishable from a C6 that is simply not ready.
 
 For the full hardware analysis — pin map, test pad locations, connector inventory — see [HARDWARE.md](HARDWARE.md).
@@ -410,7 +412,7 @@ CH341 drivers are built into most Linux kernels. The device appears as `/dev/tty
 
 ## Known Limitations
 
-- **Tested on PCB V1.0 only.** Other CrowPanel revisions may have different GPIO assignments or C6 module variants.
+- **Tested on PCB V1.0 and V1.1.** Other CrowPanel revisions may have different GPIO assignments or C6 module variants.
 - **Target firmware: v2.11.6 only.** Other esp\_hosted versions are untested. The download URL above is specific to v2.11.6.
 - **4-bit SDIO mode untested.** The wiring supports it, but OTA reliability in 4-bit mode is unverified.
 - **Version query may fail with v2.3.0.** The factory C6 firmware often times out on RPC version queries. The OTA proceeds anyway (version checks are disabled by default).

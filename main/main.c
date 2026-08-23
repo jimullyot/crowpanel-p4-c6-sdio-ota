@@ -59,20 +59,29 @@ static const char *TAG = "c6-sdio-ota";
  * and register reads are CMD52 traffic on the CMD line alone, so the bus
  * enumerates perfectly and reports both function block sizes; only the CMD53
  * data transfers that carry the slave's init packet ever touch these pins. The
- * symptom is a healthy-looking bus that simply goes quiet. */
+ * symptom is a healthy-looking bus that simply goes quiet.
+ *
+ * Order matters, because a wrong guess costs a reboot: whichever revision is
+ * listed first is the one that never pays for the probe. V1.1 leads because it
+ * is what is currently being sold, so the common case gets it right on the
+ * first attempt and V1.0 boards take the single extra reset instead. */
 struct board_wiring {
     const char *revision;
     int d0, d1, reset;
 };
 
 static const struct board_wiring kWirings[] = {
-    { "V1.0", 14, 15, 32 },
     { "V1.1", 17, 16, 54 },
+    { "V1.0", 14, 15, 32 },
 };
 #define kWiringCount (sizeof(kWirings) / sizeof(kWirings[0]))
 
 #define NVS_BOARD_NAMESPACE "board"
-#define NVS_KEY_WIRING      "sdio_wiring"   /* index that last worked */
+/* What is stored is an index into kWirings, so the key has to change whenever
+ * that order does -- otherwise a board that already settled reads its old index
+ * back and is handed the other revision's pins. Renamed when V1.1 moved to the
+ * front; boards that had settled under "sdio_wiring" simply probe once more. */
+#define NVS_KEY_WIRING      "sdio_rev"      /* index that last worked */
 #define NVS_KEY_UNPROVEN    "sdio_trying"   /* set while a guess is in flight */
 #define NVS_KEY_TRIES       "sdio_tries"    /* guesses made since the last success */
 
