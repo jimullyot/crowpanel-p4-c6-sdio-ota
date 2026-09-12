@@ -85,9 +85,14 @@ static const struct board_wiring kWirings[] = {
 #define NVS_KEY_UNPROVEN    "sdio_trying"   /* set while a guess is in flight */
 #define NVS_KEY_TRIES       "sdio_tries"    /* guesses made since the last success */
 
+/* Has to equal the ESP-Hosted *host* version baked into whatever Arduino ESP32
+ * core the clock firmware is built with -- core 3.3.11 carries 2.12.11 (see
+ * esp_hosted_host_fw_ver.h in the installed core). A slave older than the host
+ * is the mismatch the driver warns about on every boot, so this constant and
+ * the core move together. */
 static const uint32_t kTargetFwMajor = 2;
-static const uint32_t kTargetFwMinor = 11;
-static const uint32_t kTargetFwPatch = 6;
+static const uint32_t kTargetFwMinor = 12;
+static const uint32_t kTargetFwPatch = 11;
 
 /* What the C6 reported in phase 1, so the summary can state what is actually on
  * the chip instead of assuming it equals the target. */
