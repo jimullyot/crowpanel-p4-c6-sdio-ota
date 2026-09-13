@@ -126,8 +126,10 @@ static uint32_t fw_value(uint32_t major, uint32_t minor, uint32_t patch) {
 static uint8_t g_wiring;
 static bool g_wiring_applied;
 
-/* Set when the C6 has been seen to speak streaming mode, which means it is
- * already upgraded and this host can never complete a handshake with it. */
+/* Set when the C6 has been seen to speak streaming mode. That rules out the
+ * factory image and means this host can never complete a handshake with it --
+ * but it does NOT mean the C6 is at the version below, which is unreadable
+ * without the handshake. See the summary in app_main. */
 static bool g_slave_streaming;
 
 static void store_wiring(uint8_t index, uint8_t unproven, uint8_t tries) {
@@ -269,13 +271,13 @@ static void __attribute__((constructor(101))) choose_wiring(void) {
     g_wiring_applied = true;
     /* Only a wiring we are about to try goes down as unproven. When the slave
      * is known to be streaming app_main never connects, and marking it here
-     * would send the next boot off rotating pins for a board already settled. */
+     * would send the next boot off rotating pins over a wiring that answered. */
     if (!g_slave_streaming) {
         store_wiring(index, 1, tries + 1);
         ESP_LOGI(TAG, "[DIAG] Trying CrowPanel %s wiring: D0=%d D1=%d reset=%d",
                  w->revision, w->d0, w->d1, w->reset);
     } else {
-        ESP_LOGI(TAG, "[DIAG] CrowPanel %s board, C6 already upgraded — not connecting",
+        ESP_LOGI(TAG, "[DIAG] CrowPanel %s board, C6 speaks streaming mode - not connecting",
                  w->revision);
     }
 }
@@ -468,21 +470,38 @@ void app_main(void)
     }
     ESP_LOGI(TAG, "[DIAG] NVS initialized");
 
-    /* Already upgraded, and unreachable from here because of it. Connecting
-     * would walk into the same abort, so say so and stop -- this is a finished
-     * board, not a failed one. */
+    /* Not a factory C6 -- and that is the whole of what this proves.
+     *
+     * Reaching the abort means the slave named a mode this host cannot speak,
+     * which rules out the factory image. It says nothing about WHICH upgraded
+     * version is on there, because phase_query_version() only runs after a
+     * handshake that can never complete here. A C6 on 2.12.3 aborts exactly
+     * like a C6 on 2.12.11.
+     *
+     * This originally reported "no changes needed" and told the operator to
+     * carry on. A board on 2.12.3 against a 2.12.11 host disproved that: the
+     * clock took a DHCP lease and then refused every TLS connection, and this
+     * tool had called it finished. So the summary now claims only what it
+     * knows, and names the updater that works irrespective of SDIO mode. */
     if (g_slave_streaming) {
         ESP_LOGW(TAG, "[PHASE] 5/5 SUMMARY t=%" PRId64 "ms", ms_since_boot());
-        ESP_LOGW(TAG, "  RESULT: C6 ALREADY CARRIES UPGRADED FIRMWARE");
+        ESP_LOGW(TAG, "  RESULT: C6 IS NOT FACTORY - VERSION UNREADABLE FROM HERE");
         ESP_LOGW(TAG, "==========================================================");
-        ESP_LOGW(TAG, "  C6 UPDATE COMPLETE — no changes needed.");
-        ESP_LOGW(TAG, "  This C6 answered in SDIO streaming mode, which the");
-        ESP_LOGW(TAG, "  factory image cannot do — so it has already been");
-        ESP_LOGW(TAG, "  upgraded, and streaming is the mode the clock firmware");
-        ESP_LOGW(TAG, "  talks to. Carry on with setup.");
-        ESP_LOGW(TAG, "  This tool speaks packet mode, so it cannot read the C6");
-        ESP_LOGW(TAG, "  version once upgraded. Read it on the clock's About");
-        ESP_LOGW(TAG, "  screen instead, under Device -> C6 Firmware.");
+        ESP_LOGW(TAG, "  C6 NOT UPDATED - this tool cannot reach this C6.");
+        ESP_LOGW(TAG, "  It answered in SDIO streaming mode, which the factory");
+        ESP_LOGW(TAG, "  image cannot do, so it was upgraded at some point. But");
+        ESP_LOGW(TAG, "  the version query runs only after a handshake this host");
+        ESP_LOGW(TAG, "  can never complete, so the running version is unknown");
+        ESP_LOGW(TAG, "  here. 'Upgraded' is NOT the same as 'up to date'.");
+        ESP_LOGW(TAG, "  Check it on the clock: About > System Info shows C6");
+        ESP_LOGW(TAG, "  Firmware, and it has to read v%" PRIu32 ".%" PRIu32 ".%" PRIu32 " to match the",
+                 kTargetFwMajor, kTargetFwMinor, kTargetFwPatch);
+        ESP_LOGW(TAG, "  ESP-Hosted host compiled into the clock firmware. A");
+        ESP_LOGW(TAG, "  mismatch has shown up as Wi-Fi that gets a DHCP lease");
+        ESP_LOGW(TAG, "  while every TLS connection is refused.");
+        ESP_LOGW(TAG, "  To change it, run scripts/update_c6_firmware.py in the");
+        ESP_LOGW(TAG, "  ClocksByTheMinute repo. That flashes the C6 over its own");
+        ESP_LOGW(TAG, "  USB port with esptool, so SDIO mode is irrelevant to it.");
         ESP_LOGW(TAG, "  (Downgraded this C6 by hand? idf.py erase-flash re-probes.)");
         ESP_LOGW(TAG, "  Press Ctrl+] to exit.");
         ESP_LOGW(TAG, "==========================================================");
@@ -512,11 +531,11 @@ void app_main(void)
      * If it doesn't exist in current esp_hosted, esp_hosted_init() may handle
      * the SDIO handshake. Remove this call if build fails. */
     ESP_LOGI(TAG, "[DIAG] Connecting to C6 slave...");
-    ESP_LOGI(TAG, "[DIAG] An already-upgraded C6 aborts this handshake on purpose —");
-    ESP_LOGI(TAG, "[DIAG] the next boot recognises it and reports the result cleanly.");
-    /* Written down before the attempt for the same reason the pin map is: an
-     * upgraded C6 aborts the host from inside the transport's rx task, so
-     * there is no return value to inspect -- only the next boot. */
+    ESP_LOGI(TAG, "[DIAG] A C6 already running streaming-mode firmware aborts this");
+    ESP_LOGI(TAG, "[DIAG] handshake on purpose; the next boot recognises that and says so.");
+    /* Written down before the attempt for the same reason the pin map is: a
+     * streaming-mode C6 aborts the host from inside the transport's rx task,
+     * so there is no return value to inspect -- only the next boot. */
     store_flag(NVS_KEY_CONNECTING, 1);
     int64_t connect_start = ms_since_boot();
     ret = esp_hosted_connect_to_slave();
