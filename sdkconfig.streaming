@@ -1,0 +1,31 @@
+# Overlay: build the host for a C6 that already speaks SDIO streaming mode.
+#
+# Applied on top of sdkconfig.defaults, never instead of it:
+#
+#   idf.py -B build.streaming \
+#          -D SDKCONFIG=build.streaming/sdkconfig \
+#          -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.streaming" \
+#          build
+#
+# Why two builds exist at all: the SDIO receive mode is fixed when the host is
+# compiled, and the two C6 states answer to different ones. The factory image
+# (esp_hosted v2.3.0) predates the streaming option entirely, so it can only
+# speak packet mode -- which is what sdkconfig.defaults selects and why a
+# stock build is the right one for a board straight out of its box. Every
+# 2.12.x slave has CONFIG_ESP_SDIO_STREAMING_MODE defaulting to y, so once a
+# C6 has been upgraded it answers in streaming mode and the packet host aborts
+# in process_init_event before it can read a version.
+#
+# That abort is the reason to reach for this file. It proves only that the C6
+# is not factory; the running version stays unreadable, so a C6 left on the
+# wrong 2.12.x looks exactly like a current one. Building with this overlay
+# completes the handshake, which is what lets phase_query_version() see the
+# real version and upgrade it if it is behind.
+#
+# Keep sdkconfig.defaults on packet mode. The two mismatches are not equally
+# diagnosable: this host against a factory slave goes quiet in a way that is
+# indistinguishable from the wrong data-line map, while a packet host against
+# a streaming slave fails loudly and after the slave has identified itself.
+# Starting from the recognisable failure is what lets the tool tell an
+# operator which build they need instead of guessing.
+CONFIG_ESP_HOSTED_SDIO_OPTIMIZATION_RX_STREAMING_MODE=y

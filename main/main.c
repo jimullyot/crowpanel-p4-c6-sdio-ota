@@ -86,21 +86,39 @@ static const struct board_wiring kWirings[] = {
 #define NVS_KEY_UNPROVEN    "sdio_trying"   /* set while a guess is in flight */
 #define NVS_KEY_TRIES       "sdio_tries"    /* guesses made since the last success */
 
-/* A C6 that has already been upgraded speaks SDIO streaming mode, and this
- * host speaks packet. That pairing is fatal by design upstream: the slave
- * reports its mode in the init event and process_init_event calls assert(0) on
- * the mismatch. Nothing here can negotiate around it, because the host's mode
- * is fixed at compile time -- every decision in sdio_drv.c is an #if on
+/* A C6 that has already been upgraded speaks SDIO streaming mode. A packet
+ * host paired with it is fatal by design upstream: the slave reports its mode
+ * in the init event and process_init_event calls assert(0) on the mismatch.
+ * Nothing can negotiate around it at runtime, because the host's mode is fixed
+ * when it is compiled -- every decision in sdio_drv.c is an #if on
  * H_SDIO_HOST_RX_MODE, and the rx_mode field in the runtime config is only
- * logged. So one binary speaks one mode, and this one stays on packet because
- * that is what a factory C6 speaks (see sdkconfig.defaults).
+ * logged.
  *
- * Which makes the abort the most useful signal the tool has: reaching it means
- * the C6 is already carrying upgraded firmware. These two keys carry that
- * across the reboot the abort causes, so it can be reported as the finished
- * state it is rather than as a crash loop. */
+ * So one binary speaks one mode, and there are two builds of this app:
+ *
+ *   sdkconfig.defaults              packet    -> a factory C6 (v2.3.0)
+ *   + sdkconfig.streaming overlay   streaming -> a C6 already upgraded
+ *
+ * In the packet build the abort is the most useful signal the tool has, since
+ * reaching it means the C6 is not factory. These two keys carry that across
+ * the reboot the abort causes, so it can be named rather than looking like a
+ * crash loop. What it cannot do is read the version, which is why that state
+ * is a referral to the streaming build and not a verdict.
+ *
+ * The streaming build ignores both keys. There a streaming slave is the
+ * intended target rather than a dead end, so honouring a flag left behind by
+ * an earlier packet run would halt before the handshake it was built to
+ * complete -- and flipping the config would look like it had done nothing. */
 #define NVS_KEY_CONNECTING  "c6_connect"    /* set while a connect is in flight */
 #define NVS_KEY_STREAMING   "c6_stream"     /* slave has reported streaming mode */
+
+/* Which mode this binary was compiled for. A constant rather than an #if so
+ * both paths are always type-checked; the branches fold away regardless. */
+#if defined(CONFIG_ESP_HOSTED_SDIO_OPTIMIZATION_RX_STREAMING_MODE)
+static const bool kHostSpeaksStreaming = true;
+#else
+static const bool kHostSpeaksStreaming = false;
+#endif
 
 /* Has to equal the ESP-Hosted *host* version baked into whatever Arduino ESP32
  * core the clock firmware is built with -- core 3.3.11 carries 2.12.11 (see
@@ -235,12 +253,18 @@ static void __attribute__((constructor(101))) choose_wiring(void) {
     esp_reset_reason_t hint = esp_reset_reason_get_hint();
     if (unproven && load_flag(NVS_KEY_CONNECTING) && hint == ESP_RST_PANIC) {
         store_flag(NVS_KEY_CONNECTING, 0);
-        store_flag(NVS_KEY_STREAMING, 1);
-        store_wiring(index, 0, 0);
-        unproven = 0;
-        tries = 0;
+        /* Only the packet host can read this as a mode mismatch. The streaming
+         * host does not abort on a factory slave -- that pairing goes quiet
+         * instead -- so here a panic is some other fault, and crediting the
+         * wiring or recording a mode from it would both be inventions. */
+        if (!kHostSpeaksStreaming) {
+            store_flag(NVS_KEY_STREAMING, 1);
+            store_wiring(index, 0, 0);
+            unproven = 0;
+            tries = 0;
+        }
     }
-    g_slave_streaming = load_flag(NVS_KEY_STREAMING);
+    g_slave_streaming = !kHostSpeaksStreaming && load_flag(NVS_KEY_STREAMING);
 
     if (unproven) {
         if (tries >= kWiringCount) {
@@ -448,6 +472,12 @@ void app_main(void)
     ESP_LOGW(TAG, "  C6 SDIO OTA — CrowPanel ESP32-P4");
     ESP_LOGW(TAG, "  Target: ESP32-C6 upgrade via SDIO");
     ESP_LOGW(TAG, "  Host WiFi: DISABLED (SDIO transport only)");
+    /* Which build this is, stated up front: the two differ only in a Kconfig
+     * choice, so without this line a run with the wrong one is indistinguishable
+     * from a run with the right one until it fails. */
+    ESP_LOGW(TAG, "  Host SDIO RX: %s  (expects a %s C6)",
+             kHostSpeaksStreaming ? "STREAMING" : "PACKET",
+             kHostSpeaksStreaming ? "previously upgraded" : "factory");
     ESP_LOGW(TAG, "==========================================================");
 
     /* Phase 0: Init */
@@ -470,38 +500,51 @@ void app_main(void)
     }
     ESP_LOGI(TAG, "[DIAG] NVS initialized");
 
-    /* Not a factory C6 -- and that is the whole of what this proves.
+    /* Not a factory C6, and this is the wrong build to talk to it -- which is
+     * the whole of what the abort proves.
      *
-     * Reaching the abort means the slave named a mode this host cannot speak,
-     * which rules out the factory image. It says nothing about WHICH upgraded
-     * version is on there, because phase_query_version() only runs after a
-     * handshake that can never complete here. A C6 on 2.12.3 aborts exactly
-     * like a C6 on 2.12.11.
+     * Reaching it means the slave named a mode this host cannot speak, ruling
+     * out the factory image. It says nothing about WHICH upgraded version is
+     * on there, because phase_query_version() only runs after a handshake that
+     * can never complete here. A C6 on 2.12.3 aborts exactly like one already
+     * on 2.12.11.
      *
-     * This originally reported "no changes needed" and told the operator to
-     * carry on. A board on 2.12.3 against a 2.12.11 host disproved that: the
-     * clock took a DHCP lease and then refused every TLS connection, and this
-     * tool had called it finished. So the summary now claims only what it
-     * knows, and names the updater that works irrespective of SDIO mode. */
+     * Two wrong conclusions have been shipped from this spot, so neither is
+     * worth drawing again. It first reported "no changes needed" and told the
+     * operator to carry on; a board on 2.12.3 against a 2.12.11 host disproved
+     * that when the clock took a DHCP lease and then refused every TLS
+     * connection. The correction then sent them to esptool over USB, which
+     * cannot work on this hardware at all: the C6's only external data
+     * connection is the SDIO bus it shares with the P4, with no UART or USB
+     * port exposed short of soldering to test points.
+     *
+     * The way through is this same app compiled for streaming mode, which
+     * completes the handshake and can therefore read the version and act on
+     * it. So this is a referral, not a verdict. */
     if (g_slave_streaming) {
         ESP_LOGW(TAG, "[PHASE] 5/5 SUMMARY t=%" PRId64 "ms", ms_since_boot());
-        ESP_LOGW(TAG, "  RESULT: C6 IS NOT FACTORY - VERSION UNREADABLE FROM HERE");
+        ESP_LOGW(TAG, "  RESULT: C6 IS NOT FACTORY - NEEDS THE STREAMING BUILD");
         ESP_LOGW(TAG, "==========================================================");
-        ESP_LOGW(TAG, "  C6 NOT UPDATED - this tool cannot reach this C6.");
+        ESP_LOGW(TAG, "  C6 NOT UPDATED - this build cannot reach this C6.");
         ESP_LOGW(TAG, "  It answered in SDIO streaming mode, which the factory");
-        ESP_LOGW(TAG, "  image cannot do, so it was upgraded at some point. But");
-        ESP_LOGW(TAG, "  the version query runs only after a handshake this host");
-        ESP_LOGW(TAG, "  can never complete, so the running version is unknown");
-        ESP_LOGW(TAG, "  here. 'Upgraded' is NOT the same as 'up to date'.");
-        ESP_LOGW(TAG, "  Check it on the clock: About > System Info shows C6");
-        ESP_LOGW(TAG, "  Firmware, and it has to read v%" PRIu32 ".%" PRIu32 ".%" PRIu32 " to match the",
+        ESP_LOGW(TAG, "  image cannot do, so it was upgraded at some point. This");
+        ESP_LOGW(TAG, "  binary speaks packet mode, and the version query runs");
+        ESP_LOGW(TAG, "  only after a handshake it can never complete -- so the");
+        ESP_LOGW(TAG, "  running version is still unknown. 'Upgraded' is NOT the");
+        ESP_LOGW(TAG, "  same as 'up to date': it has to read v%" PRIu32 ".%" PRIu32 ".%" PRIu32 " to match",
                  kTargetFwMajor, kTargetFwMinor, kTargetFwPatch);
-        ESP_LOGW(TAG, "  ESP-Hosted host compiled into the clock firmware. A");
-        ESP_LOGW(TAG, "  mismatch has shown up as Wi-Fi that gets a DHCP lease");
-        ESP_LOGW(TAG, "  while every TLS connection is refused.");
-        ESP_LOGW(TAG, "  To change it, run scripts/update_c6_firmware.py in the");
-        ESP_LOGW(TAG, "  ClocksByTheMinute repo. That flashes the C6 over its own");
-        ESP_LOGW(TAG, "  USB port with esptool, so SDIO mode is irrelevant to it.");
+        ESP_LOGW(TAG, "  the ESP-Hosted host in the clock firmware, and a");
+        ESP_LOGW(TAG, "  mismatch shows up as Wi-Fi that takes a DHCP lease while");
+        ESP_LOGW(TAG, "  every TLS connection is refused.");
+        ESP_LOGW(TAG, "  Rebuild for streaming mode and run again -- that host");
+        ESP_LOGW(TAG, "  completes the handshake, reads the version and upgrades");
+        ESP_LOGW(TAG, "  it if it is behind:");
+        ESP_LOGW(TAG, "    idf.py -B build.streaming \\");
+        ESP_LOGW(TAG, "           -D SDKCONFIG=build.streaming/sdkconfig \\");
+        ESP_LOGW(TAG, "           -D SDKCONFIG_DEFAULTS=\"sdkconfig.defaults;sdkconfig.streaming\" \\");
+        ESP_LOGW(TAG, "           flash monitor");
+        ESP_LOGW(TAG, "  Option 9 of release_manager.py offers this for you.");
+        ESP_LOGW(TAG, "  There is no USB route to the C6 on this board.");
         ESP_LOGW(TAG, "  (Downgraded this C6 by hand? idf.py erase-flash re-probes.)");
         ESP_LOGW(TAG, "  Press Ctrl+] to exit.");
         ESP_LOGW(TAG, "==========================================================");
@@ -530,9 +573,17 @@ void app_main(void)
     /* esp_hosted_connect_to_slave() is in the stock OTA example.
      * If it doesn't exist in current esp_hosted, esp_hosted_init() may handle
      * the SDIO handshake. Remove this call if build fails. */
-    ESP_LOGI(TAG, "[DIAG] Connecting to C6 slave...");
-    ESP_LOGI(TAG, "[DIAG] A C6 already running streaming-mode firmware aborts this");
-    ESP_LOGI(TAG, "[DIAG] handshake on purpose; the next boot recognises that and says so.");
+    ESP_LOGI(TAG, "[DIAG] Connecting to C6 slave in %s mode...",
+             kHostSpeaksStreaming ? "streaming" : "packet");
+    if (kHostSpeaksStreaming) {
+        ESP_LOGI(TAG, "[DIAG] This build expects an already-upgraded C6. A factory one");
+        ESP_LOGI(TAG, "[DIAG] cannot answer in streaming mode and goes quiet instead, which");
+        ESP_LOGI(TAG, "[DIAG] looks the same as the wrong pin map -- build without the");
+        ESP_LOGI(TAG, "[DIAG] sdkconfig.streaming overlay for a board fresh out of the box.");
+    } else {
+        ESP_LOGI(TAG, "[DIAG] A C6 already running streaming-mode firmware aborts this");
+        ESP_LOGI(TAG, "[DIAG] handshake on purpose; the next boot recognises that and says so.");
+    }
     /* Written down before the attempt for the same reason the pin map is: a
      * streaming-mode C6 aborts the host from inside the transport's rx task,
      * so there is no return value to inspect -- only the next boot. */
@@ -549,6 +600,10 @@ void app_main(void)
         ESP_LOGE(TAG, "[DIAG] opened) then the bus is fine and the slave simply never reported ready —");
         ESP_LOGE(TAG, "[DIAG] which is what the wrong data-line map looks like. Rebooting to try the");
         ESP_LOGE(TAG, "[DIAG] other CrowPanel revision; the guess is already written down.");
+        if (kHostSpeaksStreaming) {
+            ESP_LOGE(TAG, "[DIAG] A factory C6 produces that same silence against this streaming build.");
+            ESP_LOGE(TAG, "[DIAG] If both revisions go quiet, build without the overlay and try packet mode.");
+        }
         ESP_LOGE(TAG, "[DIAG] If the card never enumerated: C6 power (P37 test pad = 3.3V), reset GPIO[%d].",
                  kWirings[g_wiring].reset);
         esp_restart();

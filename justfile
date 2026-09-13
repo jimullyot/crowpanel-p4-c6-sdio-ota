@@ -11,6 +11,12 @@ baud := "460800"
 # Firmware binary location
 fw_dir := "components/ota_littlefs/slave_fw_bin"
 
+# Flags selecting the streaming-mode build. See build-streaming below.
+streaming_build_dir := "build.streaming"
+streaming_args := "-B " + streaming_build_dir + \
+    " -D SDKCONFIG=" + streaming_build_dir + "/sdkconfig" + \
+    " -D SDKCONFIG_DEFAULTS=\"sdkconfig.defaults;sdkconfig.streaming\""
+
 # --- Preflight ---
 
 # Verify ESP-IDF environment is sourced
@@ -80,9 +86,18 @@ fix-components: idf-check
 set-target: idf-check
     idf.py set-target esp32p4
 
-# Build the OTA flasher app
+# Build the OTA flasher app (packet mode -- for a factory C6)
 build: idf-check check-fw
     idf.py build
+
+# Separate build dir and generated sdkconfig on purpose: ESP-IDF reads
+# sdkconfig.defaults only when the generated config is absent, so sharing
+# build/ would reuse the packet config and produce a binary identical to the
+# one that just aborted.
+
+# Build for an already-upgraded C6 (streaming mode)
+build-streaming: idf-check check-fw
+    idf.py {{streaming_args}} build
 
 # Clean build artifacts
 clean: idf-check
@@ -93,6 +108,13 @@ clean: idf-check
 # Flash OTA app to P4 and open serial monitor
 flash: build port-check
     idf.py -p {{serial_port}} flash monitor
+
+# For a C6 the packet build reported it could not reach. The startup banner
+# names which build is running, since the two differ only in a config value.
+
+# Flash the streaming-mode build and open the monitor
+flash-streaming: build-streaming port-check
+    idf.py {{streaming_args}} -p {{serial_port}} flash monitor
 
 # Flash OTA app without opening monitor
 flash-only: build port-check

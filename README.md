@@ -145,6 +145,32 @@ just set-target            # downloads managed components (esp_hosted v2.12.11, 
 just build                 # checks firmware binary, then builds
 ```
 
+#### Two builds, because the C6 can be in two states
+
+The SDIO receive mode is fixed when the host is compiled, and the two states a C6 can be in answer to different ones:
+
+| C6 state | Answers in | Build with |
+|---|---|---|
+| Factory (esp\_hosted v2.3.0, predates the option) | packet | `just build` |
+| Already upgraded (any 2.12.x — the slave defaults to streaming) | streaming | `just build-streaming` |
+
+Streaming is actually esp\_hosted's default for the host; `sdkconfig.defaults` overrides it to packet so a board straight out of its box works with a stock build. `sdkconfig.streaming` is an overlay that puts it back.
+
+**Always try `just flash` first.** The two mismatches are not equally diagnosable, and that asymmetry is the whole reason for the ordering:
+
+- **Packet host, streaming slave** — aborts in `process_init_event`, loudly, and *after* the slave has identified itself. The next boot recognises it and prints `C6 NOT UPDATED - this build cannot reach this C6`, which is the signal to run `just flash-streaming`.
+- **Streaming host, factory slave** — goes quiet. Indistinguishable from the wrong data-line map, so it looks like a wiring fault and sends you probing pins that were never wrong.
+
+The startup banner names which build is running, because they differ only in a config value:
+
+```
+Host SDIO RX: PACKET  (expects a factory C6)
+```
+
+What the abort proves is only that the C6 **is not factory** — never which version it carries, because `phase_query_version()` runs after a handshake that build cannot complete. A C6 on 2.12.3 aborts exactly like one on 2.12.11. Completing the handshake with the streaming build is what makes the version readable, which is why that build is the answer rather than a workaround.
+
+> **There is no USB or UART route to the C6 on a stock board** (see [The Problem](#the-problem)), so "flash the C6 directly with esptool" is not an alternative to this — it needs [soldered wires](#uart-flash-requires-soldering-3-wires). The streaming build is the supported way to reach an already-upgraded C6.
+
 > **Note:** The `ota_littlefs` component and `Kconfig.projbuild` are included in this repository. Do **not** run `just fix-components` — it overwrites these files with upstream defaults that lack project-specific configuration. The `fix-components` recipe exists only for development against a fresh esp\_hosted checkout without this repository's tracked components.
 
 ### 3. Backup (optional)
@@ -270,7 +296,8 @@ If a function is missing, check the actual header names and update `main.c`.
 |---|---|---|
 | `[FAIL] esp_hosted_init` | SDIO transport broken at init | Verify serial port, check that the C6 EN pin is reachable (GPIO32 on V1.0, GPIO54 on V1.1) |
 | `[FAIL] esp_hosted_connect_to_slave`, once | Wrong pin map for this board revision | None — the app reboots and tries the other revision by itself. V1.1 is tried first, so on a V1.0 board watch for `Trying CrowPanel V1.0 wiring` on the next boot |
-| `[WARN] Tried every known wiring` | C6 answered on neither revision | Check C6 power (P37 test pad should read 3.3V) — this is the chip or the board, not the pin map |
+| `C6 NOT UPDATED - this build cannot reach this C6` (after one panic and backtrace) | C6 is not factory, so it answers in streaming mode and the packet build aborts by design | Run `just flash-streaming`. This proves nothing about *which* version it carries — only that it isn't factory |
+| `[WARN] Tried every known wiring` | C6 answered on neither revision | Check C6 power (P37 test pad should read 3.3V) — this is the chip or the board, not the pin map. If this is the **streaming** build, a factory C6 produces the same silence: try `just flash` instead |
 | `[FAIL] OTA transfer failed` + duration < 5s | Transport or OTA begin failed | SDIO fundamentally broken — skip to UART flash (see [Alternative Paths](#alternative-flash-paths)) |
 | `[FAIL] OTA transfer failed` + duration 5–30s | Transport died mid-transfer | Try lower SDIO clock or smaller chunks (see [Tuning](#tuning-parameters)) |
 | `[FAIL] OTA transfer failed` + duration > 30s | Timeout | C6 hung — power-cycle and retry |

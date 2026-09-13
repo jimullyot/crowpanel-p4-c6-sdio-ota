@@ -1,6 +1,9 @@
 build/
+build.streaming/
 managed_components/
 dependencies.lock
+# The generated config. sdkconfig.streaming is an input overlay, not this --
+# the streaming build keeps its generated one inside build.streaming/.
 sdkconfig
 sdkconfig.old
 components/ota_littlefs/slave_fw_bin/*.bin
