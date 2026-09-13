@@ -53,8 +53,16 @@ CONFIG_ESP_HOSTED_SDIO_RESET_DELAY_MS=1500
 #
 # This line was inert until the esp_hosted bump to v2.11.6: v2.9.7 had no such
 # option, so the first working run against a factory board was never actually
-# in streaming mode. Nothing to gain either way here -- the transfer is ~1.1 MB
-# once, and read throughput is not what makes this slow.
+# in streaming mode. There is no throughput argument either way -- the transfer
+# is ~1.1 MB once, and read speed is not what makes this slow.
+#
+# Keep it on packet regardless, because the two mismatches are not equally
+# diagnosable and this is the good one. Packet host against the streaming slave
+# an upgrade leaves behind aborts in process_init_event, loudly and after the
+# slave has identified itself; streaming host against a factory slave just goes
+# quiet, which is indistinguishable from the wrong data-line map. main.c reads
+# that abort as proof the C6 is already upgraded, so choosing the failure that
+# can be recognised is what lets one binary report on either state.
 CONFIG_ESP_HOSTED_SDIO_OPTIMIZATION_RX_NONE=y
 
 # Reset slave on host boot for clean state

@@ -45,6 +45,7 @@
 #include "ota_littlefs.h"
 #include "nvs.h"
 #include "esp_hosted_transport_config.h"
+#include "esp_private/system_internal.h"  /* esp_reset_reason_get_hint() */
 
 static const char *TAG = "c6-sdio-ota";
 
@@ -85,6 +86,22 @@ static const struct board_wiring kWirings[] = {
 #define NVS_KEY_UNPROVEN    "sdio_trying"   /* set while a guess is in flight */
 #define NVS_KEY_TRIES       "sdio_tries"    /* guesses made since the last success */
 
+/* A C6 that has already been upgraded speaks SDIO streaming mode, and this
+ * host speaks packet. That pairing is fatal by design upstream: the slave
+ * reports its mode in the init event and process_init_event calls assert(0) on
+ * the mismatch. Nothing here can negotiate around it, because the host's mode
+ * is fixed at compile time -- every decision in sdio_drv.c is an #if on
+ * H_SDIO_HOST_RX_MODE, and the rx_mode field in the runtime config is only
+ * logged. So one binary speaks one mode, and this one stays on packet because
+ * that is what a factory C6 speaks (see sdkconfig.defaults).
+ *
+ * Which makes the abort the most useful signal the tool has: reaching it means
+ * the C6 is already carrying upgraded firmware. These two keys carry that
+ * across the reboot the abort causes, so it can be reported as the finished
+ * state it is rather than as a crash loop. */
+#define NVS_KEY_CONNECTING  "c6_connect"    /* set while a connect is in flight */
+#define NVS_KEY_STREAMING   "c6_stream"     /* slave has reported streaming mode */
+
 /* Has to equal the ESP-Hosted *host* version baked into whatever Arduino ESP32
  * core the clock firmware is built with -- core 3.3.11 carries 2.12.11 (see
  * esp_hosted_host_fw_ver.h in the installed core). A slave older than the host
@@ -108,6 +125,10 @@ static uint32_t fw_value(uint32_t major, uint32_t minor, uint32_t patch) {
  * credited to a revision we never actually tried. */
 static uint8_t g_wiring;
 static bool g_wiring_applied;
+
+/* Set when the C6 has been seen to speak streaming mode, which means it is
+ * already upgraded and this host can never complete a handshake with it. */
+static bool g_slave_streaming;
 
 static void store_wiring(uint8_t index, uint8_t unproven, uint8_t tries) {
     nvs_handle_t h;
@@ -133,6 +154,26 @@ static uint8_t load_wiring(uint8_t *unproven, uint8_t *tries) {
         nvs_close(h);
     }
     return index < kWiringCount ? index : 0;
+}
+
+static void store_flag(const char *key, uint8_t value) {
+    nvs_handle_t h;
+    if (nvs_open(NVS_BOARD_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) {
+        return;
+    }
+    nvs_set_u8(h, key, value);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+static uint8_t load_flag(const char *key) {
+    nvs_handle_t h;
+    uint8_t value = 0;
+    if (nvs_open(NVS_BOARD_NAMESPACE, NVS_READONLY, &h) == ESP_OK) {
+        nvs_get_u8(h, key, &value);
+        nvs_close(h);
+    }
+    return value;
 }
 
 /* Pick a wiring and hand it to esp_hosted before the transport starts.
@@ -165,6 +206,40 @@ static void __attribute__((constructor(101))) choose_wiring(void) {
     uint8_t unproven = 0, tries = 0;
     uint8_t index = load_wiring(&unproven, &tries);
 
+    /* Both failures reboot, so the reset reason is what tells them apart. A pin
+     * map the C6 never answers on comes back through an esp_restart(), which
+     * reads as ESP_RST_SW; only the assert(0) on an SDIO mode mismatch arrives
+     * as ESP_RST_PANIC. Reaching that assert means the card enumerated, the
+     * slave answered and it named its mode -- so this wiring is right and
+     * rotating away from it would report "the C6 answered on none of them"
+     * about a C6 that answered every time.
+     *
+     * Two traps here, both of which silently make the test never fire, and
+     * both of which cost a trip to the bench to find.
+     *
+     * Read the hint rather than esp_reset_reason(), because the priority on
+     * this constructor cuts both ways: esp_reset_reason() is backed by a plain
+     * unprioritised constructor in esp_system, which has therefore not run
+     * yet, so it still reads zero (ESP_RST_UNKNOWN) this early.
+     *
+     * And call esp_reset_reason() anyway, for the link and not the value:
+     * panic.c defines weak no-op esp_reset_reason_{set,get}_hint() so an app
+     * that never asks for a reset reason does not pay for the code. Nothing
+     * else here calls it, so without this reference those stubs win, the panic
+     * handler records no hint at all, and every abort looks like silence. The
+     * real reset_reason.c clears the hint from its own constructor afterwards,
+     * which is why reading it here is free of side effects. */
+    (void)esp_reset_reason();
+    esp_reset_reason_t hint = esp_reset_reason_get_hint();
+    if (unproven && load_flag(NVS_KEY_CONNECTING) && hint == ESP_RST_PANIC) {
+        store_flag(NVS_KEY_CONNECTING, 0);
+        store_flag(NVS_KEY_STREAMING, 1);
+        store_wiring(index, 0, 0);
+        unproven = 0;
+        tries = 0;
+    }
+    g_slave_streaming = load_flag(NVS_KEY_STREAMING);
+
     if (unproven) {
         if (tries >= kWiringCount) {
             ESP_LOGW(TAG, "[WARN] Tried every known wiring and the C6 answered on none of them.");
@@ -192,9 +267,17 @@ static void __attribute__((constructor(101))) choose_wiring(void) {
 
     g_wiring = index;
     g_wiring_applied = true;
-    store_wiring(index, 1, tries + 1);
-    ESP_LOGI(TAG, "[DIAG] Trying CrowPanel %s wiring: D0=%d D1=%d reset=%d",
-             w->revision, w->d0, w->d1, w->reset);
+    /* Only a wiring we are about to try goes down as unproven. When the slave
+     * is known to be streaming app_main never connects, and marking it here
+     * would send the next boot off rotating pins for a board already settled. */
+    if (!g_slave_streaming) {
+        store_wiring(index, 1, tries + 1);
+        ESP_LOGI(TAG, "[DIAG] Trying CrowPanel %s wiring: D0=%d D1=%d reset=%d",
+                 w->revision, w->d0, w->d1, w->reset);
+    } else {
+        ESP_LOGI(TAG, "[DIAG] CrowPanel %s board, C6 already upgraded — not connecting",
+                 w->revision);
+    }
 }
 
 /* The slave answered, so this wiring is right. Later boots start here. */
@@ -385,6 +468,27 @@ void app_main(void)
     }
     ESP_LOGI(TAG, "[DIAG] NVS initialized");
 
+    /* Already upgraded, and unreachable from here because of it. Connecting
+     * would walk into the same abort, so say so and stop -- this is a finished
+     * board, not a failed one. */
+    if (g_slave_streaming) {
+        ESP_LOGW(TAG, "[PHASE] 5/5 SUMMARY t=%" PRId64 "ms", ms_since_boot());
+        ESP_LOGW(TAG, "  RESULT: C6 ALREADY CARRIES UPGRADED FIRMWARE");
+        ESP_LOGW(TAG, "==========================================================");
+        ESP_LOGW(TAG, "  C6 UPDATE COMPLETE — no changes needed.");
+        ESP_LOGW(TAG, "  This C6 answered in SDIO streaming mode, which the");
+        ESP_LOGW(TAG, "  factory image cannot do — so it has already been");
+        ESP_LOGW(TAG, "  upgraded, and streaming is the mode the clock firmware");
+        ESP_LOGW(TAG, "  talks to. Carry on with setup.");
+        ESP_LOGW(TAG, "  This tool speaks packet mode, so it cannot read the C6");
+        ESP_LOGW(TAG, "  version once upgraded. Read it on the clock's About");
+        ESP_LOGW(TAG, "  screen instead, under Device -> C6 Firmware.");
+        ESP_LOGW(TAG, "  (Downgraded this C6 by hand? idf.py erase-flash re-probes.)");
+        ESP_LOGW(TAG, "  Press Ctrl+] to exit.");
+        ESP_LOGW(TAG, "==========================================================");
+        goto halt;
+    }
+
     ret = esp_event_loop_create_default();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "[FAIL] Event loop creation failed: %s", esp_err_to_name(ret));
@@ -408,9 +512,16 @@ void app_main(void)
      * If it doesn't exist in current esp_hosted, esp_hosted_init() may handle
      * the SDIO handshake. Remove this call if build fails. */
     ESP_LOGI(TAG, "[DIAG] Connecting to C6 slave...");
+    ESP_LOGI(TAG, "[DIAG] An already-upgraded C6 aborts this handshake on purpose —");
+    ESP_LOGI(TAG, "[DIAG] the next boot recognises it and reports the result cleanly.");
+    /* Written down before the attempt for the same reason the pin map is: an
+     * upgraded C6 aborts the host from inside the transport's rx task, so
+     * there is no return value to inspect -- only the next boot. */
+    store_flag(NVS_KEY_CONNECTING, 1);
     int64_t connect_start = ms_since_boot();
     ret = esp_hosted_connect_to_slave();
     int64_t connect_time = ms_since_boot() - connect_start;
+    store_flag(NVS_KEY_CONNECTING, 0);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "[FAIL] esp_hosted_connect_to_slave failed: %s (0x%x) after %" PRId64 "ms",
                  esp_err_to_name(ret), ret, connect_time);
