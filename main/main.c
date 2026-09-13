@@ -543,7 +543,8 @@ void app_main(void)
         ESP_LOGW(TAG, "           -D SDKCONFIG=build.streaming/sdkconfig \\");
         ESP_LOGW(TAG, "           -D SDKCONFIG_DEFAULTS=\"sdkconfig.defaults;sdkconfig.streaming\" \\");
         ESP_LOGW(TAG, "           flash monitor");
-        ESP_LOGW(TAG, "  Option 9 of release_manager.py offers this for you.");
+        ESP_LOGW(TAG, "  Or just run 'just flash-streaming'. release_manager.py");
+        ESP_LOGW(TAG, "  offers it too, under Update ESP32-C6 co-processor firmware.");
         ESP_LOGW(TAG, "  There is no USB route to the C6 on this board.");
         ESP_LOGW(TAG, "  (Downgraded this C6 by hand? idf.py erase-flash re-probes.)");
         ESP_LOGW(TAG, "  Press Ctrl+] to exit.");
