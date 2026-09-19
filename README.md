@@ -57,7 +57,20 @@ The C6 upgrade persists across P4 reflashes — the C6 has its own flash.
 
 **V1.1:** Verified 2026-08-01. The app worked out the revision on its own and connected in 1.9 s. That board shipped with C6 v2.12.3, which was newer than the v2.11.6 targeted at the time, so it reported the version and exited without writing anything. It cost a reboot to get there then, because V1.0 was tried first; V1.1 now leads, so it connects on the first attempt. See [Board revisions](#board-revisions).
 
-**A V1.1 upgrade from v2.12.3 has now been run**, to the v2.12.11 target, on 19 Sep 2026. It reported success and the C6 came up on 2.12.11 — but that pairing is what exposed the SDIO receive fault described at the top, so a completed transfer is not by itself evidence of a working link. The v2.12.13 target has not been exercised on hardware yet.
+**v2.12.13 verified on V1.1, 19 Sep 2026.** A board on 2.12.11 was upgraded with the streaming build; re-running the tool afterwards read `C6 firmware: 2.12.13` back over a completed handshake, which is the only reading that means anything.
+
+More to the point, it fixed the fault. On the same board with matched 2.12.11, unicast was completely dead below DNS. With 2.12.13 the clock firmware's own probe reports:
+
+```
+[WiFi][alive] at Wi-Fi check, before connect poll: C6 answered (2.12.13) in 7 ms
+[WiFi] SUCCESS! Connected to 'Chizzie', IP=10.0.0.196
+[WiFi][diag] [modem sleep ON] TCP to 1.1.1.1:443 (no DNS): connected after 39 ms
+[eez_boot] NTP sync OK at boot
+```
+
+Unicast flowing with modem sleep left **on** is the result that matters: sleep was the other suspect, and it is still enabled here, so 2.12.13 is what changed. NTP had never once synced at boot before this.
+
+Earlier that day the same board was taken from v2.12.3 to v2.12.11 and reported success, yet still wedged — so note that a completed transfer is not on its own evidence of a working link. Only the probe above is.
 
 ## Prerequisites
 
