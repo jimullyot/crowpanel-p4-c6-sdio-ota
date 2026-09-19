@@ -120,14 +120,28 @@ static const bool kHostSpeaksStreaming = true;
 static const bool kHostSpeaksStreaming = false;
 #endif
 
-/* Has to equal the ESP-Hosted *host* version baked into whatever Arduino ESP32
- * core the clock firmware is built with -- core 3.3.11 carries 2.12.11 (see
- * esp_hosted_host_fw_ver.h in the installed core). A slave older than the host
- * is the mismatch the driver warns about on every boot, so this constant and
- * the core move together. */
+/* Normally this equals the ESP-Hosted *host* version baked into whatever
+ * Arduino ESP32 core the clock firmware is built with -- core 3.3.11 carries
+ * 2.12.11 (see esp_hosted_host_fw_ver.h in the installed core). A slave older
+ * than the host is the mismatch the driver warns about on every boot, so the
+ * constant normally tracks the core.
+ *
+ * It is deliberately one release *ahead* of the host as of 19 Sep 2026. On a
+ * V1.1 panel running matched 2.12.11 on both sides, the host's SDIO receive
+ * path stops permanently partway through a boot: association and DHCP succeed,
+ * then nothing ever comes back, including control RPCs that carry no network
+ * traffic at all. Upstream 2.12.12 lists "fixed sdio incorrect identification
+ * of all-ones bus read", and an all-ones read is exactly what a host sees when
+ * the slave is not driving the line -- misreading it as data would desync the
+ * receive stream permanently, which is the shape of the fault. 2.12.13 is the
+ * first release carrying that fix with a published binary (2.12.12 has none).
+ *
+ * Ahead of the host is the safe direction: the driver warns when the slave is
+ * *older*, and the version check below already refuses to downgrade. If this
+ * does not fix it, the fix was host-side and only a newer core can deliver it. */
 static const uint32_t kTargetFwMajor = 2;
 static const uint32_t kTargetFwMinor = 12;
-static const uint32_t kTargetFwPatch = 11;
+static const uint32_t kTargetFwPatch = 13;
 
 /* What the C6 reported in phase 1, so the summary can state what is actually on
  * the chip instead of assuming it equals the target. */

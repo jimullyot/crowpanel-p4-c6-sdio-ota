@@ -114,7 +114,7 @@ menu "OTA Verification Options"
             If host is X.Y.Z and slave is A.B.C, warn if X.Y != A.B.
 
             This ensures compatible API versions between host and slave.
-            Disabled by default: cross-version OTA (e.g. v2.3.0 → v2.12.11) is the
+            Disabled by default: cross-version OTA (e.g. v2.3.0 → v2.12.13) is the
             primary use case for this project.
 
     config OTA_VERSION_CHECK_SLAVEFW_SLAVE
